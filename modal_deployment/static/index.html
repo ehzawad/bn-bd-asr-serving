@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f6f7f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101513" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-title" content="Bangla STT">
+<title>Bangla Speech to Text</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23006a4e'/><circle cx='16' cy='16' r='7' fill='%23f42a41'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f6f7f5; --card: #ffffff; --ink: #18201c; --muted: #5d6a63; --line: #dfe5e1;
+    --accent: #006a4e; --accent-ink: #ffffff; --accent-soft: #e3f1ec; --rec: #d92638;
+    --warn: #9a6200; --warn-soft: #fbf1dd; --err: #b3261e; --err-soft: #fbe4e2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101513; --card: #18201c; --ink: #e8eeea; --muted: #9aa8a0; --line: #2a3530;
+      --accent: #3fb68b; --accent-ink: #06130e; --accent-soft: #173229; --rec: #ff5c6c;
+      --warn: #f0b44c; --warn-soft: #2e2512; --err: #ff8a80; --err-soft: #331816;
+    }
+  }
+  * { box-sizing: border-box; }
+  button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Bengali", sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h1 .bn { font-family: "Noto Sans Bengali", sans-serif; font-weight: 600; }
+  h1 .en::before { content: "· "; color: var(--muted); }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: .95rem; }
+  .status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 12px;
+            background: var(--warn-soft); color: var(--warn); font-weight: 500; margin-bottom: 16px; }
+  .status .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex: none; }
+  body[data-state="waking"] .status .dot { animation: pulse 1.2s ease-in-out infinite; }
+  body[data-state="ready"] .status { background: var(--accent-soft); color: var(--accent); }
+  body[data-state="offline"] .status, body[data-state="error"] .status { background: var(--err-soft); color: var(--err); }
+  .status .grow { flex: 1; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px;
+          margin-bottom: 16px; position: relative; }
+  .tabs { display: flex; gap: 6px; background: var(--bg); padding: 4px; border-radius: 12px; margin-bottom: 18px; }
+  .tabs button { flex: 1; border: 0; background: transparent; color: var(--muted); padding: 8px 10px;
+                 border-radius: 9px; font: inherit; font-weight: 500; cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 2px #0002; }
+  .pane[hidden] { display: none; }
+  .recwrap { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 8px 0; }
+  .recbtn { width: 88px; height: 88px; border-radius: 50%; border: 0; cursor: pointer; background: var(--accent);
+            color: var(--accent-ink); display: grid; place-items: center; }
+  .recbtn svg { width: 34px; height: 34px; }
+  .recbtn.on { background: var(--rec); color: #fff; }
+  .recbtn.on { position: relative; z-index: 2; }  /* above the lock: a recording can always be stopped */
+  .recbtn .stop, .recbtn.on .mic { display: none; }
+  .recbtn.on .stop { display: block; }
+  .recbtn:disabled, .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .timer { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .meter { width: 180px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .08s; }
+  .drop { border: 2px dashed var(--line); border-radius: 14px; padding: 28px 16px; text-align: center; color: var(--muted); }
+  .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .btn { border: 0; border-radius: 10px; padding: 9px 16px; font: inherit; font-weight: 500; cursor: pointer;
+         background: var(--accent); color: var(--accent-ink); }
+  .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  .hint { color: var(--muted); font-size: .88rem; margin: 10px 0 0; text-align: center; }
+  .lock { position: absolute; inset: 0; border-radius: 16px; background: color-mix(in srgb, var(--card) 82%, transparent);
+          display: none; place-items: center; text-align: center; padding: 20px; color: var(--muted); font-weight: 500; }
+  body:not([data-state="ready"]) .lock { display: grid; }
+  .result h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+  .text { font-family: "Noto Sans Bengali", sans-serif; font-size: 1.3rem; line-height: 1.75; white-space: pre-wrap;
+          min-height: 2.2em; word-wrap: break-word; }
+  .text.placeholder { color: var(--muted); font-family: inherit; font-size: 1rem; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .meta { color: var(--muted); font-size: .88rem; flex: 1; }
+  audio { width: 100%; margin-bottom: 14px; }
+  .error { background: var(--err-soft); color: var(--err); border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
+  .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent;
+          border-radius: 50%; animation: r .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  @keyframes r { to { transform: rotate(1turn); } }
+  footer { color: var(--muted); font-size: .82rem; text-align: center; margin-top: 24px; }
+  @media (hover: none) { .drop-hint { display: none; } .drop { padding: 20px 16px; } }
+  @media (max-width: 480px) {
+    main { padding: 20px 16px 32px; }
+    h1 { font-size: 1.3rem; } h1 .en { display: block; font-size: 1.05rem; font-weight: 500; color: var(--muted); }
+    h1 .en::before { content: none; }
+    .card { padding: 16px; border-radius: 14px; }
+    .text { font-size: 1.2rem; }
+    .recbtn { width: 96px; height: 96px; }
+  }
+</style>
+</head>
+<body data-state="waking">
+<main>
+  <h1><span class="bn">বাংলা কথা থেকে লেখা</span> <span class="en">Bangla speech to text</span></h1>
+  <p class="sub">Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · served with vLLM on an NVIDIA L4</p>
+
+  <div class="status" role="status" aria-live="polite">
+    <span class="dot"></span><span class="grow" id="status">Connecting…</span>
+    <button class="btn ghost" id="wake" hidden>Wake it up</button>
+  </div>
+
+  <section class="card" aria-label="Audio input">
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" data-pane="rec">Record</button>
+      <button role="tab" aria-selected="false" data-pane="up">Upload</button>
+    </div>
+    <div class="pane" id="pane-rec">
+      <div class="recwrap">
+        <button class="recbtn" id="recbtn" aria-label="Start recording" disabled>
+          <svg class="mic" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+          <svg class="stop" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
+        <div class="meter" aria-hidden="true"><i id="level"></i></div>
+        <div class="timer" id="timer">00:00</div>
+      </div>
+      <p class="hint">Press to record, press again to stop. The transcript follows automatically.</p>
+    </div>
+    <div class="pane" id="pane-up" hidden>
+      <div class="drop" id="drop">
+        <p class="drop-hint" style="margin:0 0 12px">Drop an audio file here, or</p>
+        <button class="btn" id="pick" disabled>Choose a file</button>
+        <input type="file" id="file" accept="audio/*,video/*,.wav,.flac,.mp3,.m4a,.ogg,.opus,.webm" hidden>
+      </div>
+      <p class="hint" id="limits">WAV, FLAC, MP3, M4A, OGG, WebM, up to 10 minutes.</p>
+    </div>
+    <div class="lock" id="lock">The model is starting. This unlocks by itself when it is ready.</div>
+  </section>
+
+  <section class="card result" aria-label="Transcript">
+    <audio id="player" controls hidden></audio>
+    <h2>Transcript</h2>
+    <div class="text placeholder" id="text" lang="bn">Your transcript will appear here.</div>
+    <div class="row">
+      <span class="meta" id="meta"></span>
+      <button class="btn ghost" id="retry" hidden>Try again</button>
+      <button class="btn ghost" id="copy" hidden>Copy</button>
+    </div>
+    <div class="error" id="error" hidden></div>
+  </section>
+
+  <footer>Language is fixed to Bangla (bn). Long audio is cut into pieces of up to 25&nbsp;s at pauses (no VAD).
+    Audio is processed in memory and not stored. The GPU sleeps after idle minutes to save cost.</footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let ready = false, busy = false, wakeSeen = null, pollT = null, tickT = null;
+let cfg = { max_seconds: 600, idle_minutes: 10 };
+
+async function getJSON(url, opts = {}, ms = 15000) {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
+  try { const r = await fetch(url, { cache: "no-store", ...opts, signal: ctl.signal }); return await r.json(); }
+  finally { clearTimeout(t); }
+}
+const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+function render(state) {
+  document.body.dataset.state = state;
+  ready = state === "ready";
+  $("wake").hidden = state !== "asleep" && state !== "error";
+  clearInterval(tickT);
+  if (state === "ready") {
+    wakeSeen = null;
+    $("status").textContent = "Ready. Record or upload Bangla speech.";
+  } else if (state === "waking") {
+    wakeSeen ??= Date.now();
+    const show = () => $("status").textContent =
+      `Waking the model on the GPU… ${fmt((Date.now() - wakeSeen) / 1000)} · a cold start takes about 1–3 minutes`;
+    show(); tickT = setInterval(show, 1000);
+  } else if (state === "asleep") {
+    $("status").textContent = `The model is asleep (it sleeps after ${cfg.idle_minutes} idle minutes to save GPU cost).`;
+    $("lock").textContent = "Wake the model to record or upload.";
+  } else if (state === "error") {
+    $("status").textContent = "The model did not start. Try waking it again in a few minutes.";
+    $("lock").textContent = "Wake the model to record or upload.";
+  } else {
+    $("status").textContent = "Cannot reach the service. Retrying…";
+  }
+  if (state === "waking") $("lock").textContent = "The model is starting. This unlocks by itself when it is ready.";
+  if (state === "offline") $("lock").textContent = "Cannot reach the service. Retrying…";
+  $("recbtn").disabled = recording() ? false : (!ready || busy);
+  $("pick").disabled = !ready || busy || recording();
+}
+
+// After IDLE_MS without a tap or key press (and never while recording or transcribing) the
+// page stops polling. The CPU frontend then stops 5 minutes later and the GPU 10 minutes after
+// its last request, so nothing runs 10 minutes after the last tap. A tap resumes and wakes.
+const IDLE_MS = 5 * 60 * 1000;
+let lastActive = Date.now(), paused = false;
+const active = () => recording() || busy || Date.now() - lastActive < IDLE_MS;
+function pause() {
+  paused = true; ready = false;
+  clearTimeout(pollT); clearInterval(tickT);
+  document.body.dataset.state = "paused";
+  $("wake").hidden = true;
+  $("status").textContent = "Paused after 5 idle minutes; the servers shut down soon to save cost. Tap anywhere to continue.";
+  $("lock").textContent = "Tap anywhere to continue.";
+  $("recbtn").disabled = true; $("pick").disabled = true;
+}
+for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, () => {
+  lastActive = Date.now();
+  if (paused) { paused = false; wake(); }
+}, { passive: true });
+
+async function poll() {
+  clearTimeout(pollT);
+  if (document.hidden) return;  // resumes on visibilitychange
+  if (!active()) return pause();
+  try {
+    // Only while recording does a poll reach vLLM itself; that keeps the GPU warm for the
+    // recording in progress. Other polls read autoscaler stats and never touch the GPU.
+    const s = await getJSON(recording() ? "/api/status?probe=1" : "/api/status");
+    cfg = s; render(s.state);
+    if (s.state === "asleep" && (recording() || busy)) return wake();
+  } catch { render("offline"); }
+  // Once ready, status reads autoscaler stats only, so polling never keeps the GPU awake.
+  pollT = setTimeout(poll, ready ? 20000 : 2000);
+}
+
+async function wake() {
+  clearTimeout(pollT);
+  render("waking");
+  try { cfg = await getJSON("/api/wake", { method: "POST" }); render(cfg.state); }
+  catch { render("offline"); }
+  pollT = setTimeout(poll, 2000);
+}
+$("wake").onclick = wake;
+
+// The controls unlock only on "ready", but that can be a few seconds old: confirm with vLLM
+// itself right before recording or uploading.
+async function confirmReady() {
+  try {
+    cfg = await getJSON("/api/status?probe=1"); render(cfg.state);
+  } catch { render("offline"); }
+  if (!ready) { showError("The model is not ready yet. This page unlocks by itself when it is."); clearTimeout(pollT); pollT = setTimeout(poll, 2000); }
+  return ready;
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !paused) poll(); });
+
+// Tabs
+document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach((x) => x.setAttribute("aria-selected", x === b));
+  $("pane-rec").hidden = b.dataset.pane !== "rec";
+  $("pane-up").hidden = b.dataset.pane !== "up";
+});
+
+// Recording
+let rec = null, stream = null, t0 = 0, recT = null, actx = null, raf = null;
+const recording = () => rec && rec.state === "recording";
+function mimeAndExt() {
+  for (const [m, e] of [["audio/webm;codecs=opus", "webm"], ["audio/ogg;codecs=opus", "ogg"], ["audio/mp4", "m4a"], ["audio/webm", "webm"]])
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return [m, e];
+  return ["", "webm"];
+}
+let starting = false;
+async function startRec() {
+  if (starting) return;  // a second tap during the readiness check must not open a second recorder
+  starting = true; $("recbtn").disabled = true;
+  try { await startRecording(); } finally { starting = false; render(document.body.dataset.state); }
+}
+async function startRecording() {
+  clearError();
+  const AC = window.AudioContext || window.webkitAudioContext;
+  try { actx = AC ? new AC() : null; } catch { actx = null; }  // created inside the tap so iOS lets it run
+  const closeMeter = () => { if (actx) { actx.close(); actx = null; } };
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    closeMeter();
+    return showError("This browser cannot record here. Use Upload instead, or open the page in Safari or Chrome.");
+  }
+  // Ask for the microphone synchronously inside the tap (Safari can refuse media access after
+  // an await), and confirm with vLLM in parallel; release the mic if the model is not ready.
+  const mic = navigator.mediaDevices.getUserMedia({ audio: {
+    channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  mic.catch(() => {});
+  if (!(await confirmReady())) {
+    mic.then((s) => s.getTracks().forEach((t) => t.stop())).catch(() => {});
+    return closeMeter();
+  }
+  try {
+    stream = await mic;
+  } catch (e) {
+    closeMeter();
+    return showError(e.name === "NotAllowedError" ? "Microphone permission was denied. Allow it in the browser settings and try again." : `No microphone available (${e.name}).`);
+  }
+  // The permission prompt can stay open for a while: check the page and the model again.
+  if (paused || busy || document.hidden || !(await confirmReady())) {
+    stream.getTracks().forEach((t) => t.stop());
+    return closeMeter();
+  }
+  const [mime, ext] = mimeAndExt();
+  try {
+    rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 128000 } : undefined);
+  } catch (e) {
+    stream.getTracks().forEach((t) => t.stop());
+    if (actx) { actx.close(); actx = null; }
+    return showError(`Recording is not supported in this browser (${e.name}). Use Upload instead.`);
+  }
+  const parts = [];
+  rec.ondataavailable = (e) => e.data.size && parts.push(e.data);
+  rec.onstop = () => {
+    stream.getTracks().forEach((t) => t.stop());
+    cancelAnimationFrame(raf); if (actx) { actx.close(); actx = null; } $("level").style.width = "0";
+    clearInterval(recT);
+    $("recbtn").classList.remove("on"); $("recbtn").setAttribute("aria-label", "Start recording");
+    send(new Blob(parts, { type: rec.mimeType || mime }), `recording.${ext}`);
+  };
+  rec.start(1000);
+  t0 = Date.now();
+  render(document.body.dataset.state);
+  $("recbtn").classList.add("on"); $("recbtn").setAttribute("aria-label", "Stop recording");
+  recT = setInterval(() => {
+    const s = (Date.now() - t0) / 1000;
+    $("timer").textContent = `${fmt(s)} / ${fmt(cfg.max_seconds)}`;
+    if (s >= cfg.max_seconds - 1 && recording()) rec.stop();
+  }, 250);
+  if (actx) {  // level meter only; recording does not depend on it
+    if (actx.state === "suspended") actx.resume();
+    const an = actx.createAnalyser(); an.fftSize = 1024;
+    actx.createMediaStreamSource(stream).connect(an);
+    const buf = new Float32Array(an.fftSize);
+    const draw = () => { an.getFloatTimeDomainData(buf);
+      let p = 0; for (const v of buf) p = Math.max(p, Math.abs(v));
+      $("level").style.width = `${Math.min(100, p * 140)}%`; raf = requestAnimationFrame(draw); };
+    draw();
+  }
+}
+$("recbtn").onclick = () => recording() ? rec.stop() : startRec();
+
+// Upload
+$("pick").onclick = () => $("file").click();
+$("file").onchange = async () => {
+  const f = $("file").files[0]; $("file").value = "";
+  if (f && await confirmReady()) send(f, f.name);
+};
+const drop = $("drop");
+drop.ondragover = (e) => { e.preventDefault(); if (ready && !busy) drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = async (e) => { e.preventDefault(); drop.classList.remove("over");
+  const f = e.dataTransfer.files[0]; if (f && ready && !busy && await confirmReady()) send(f, f.name); };
+
+// Transcribe
+function clearError() { $("error").hidden = true; }
+function showError(msg) { $("error").textContent = msg; $("error").hidden = false; }
+let last = null;
+async function send(blob, name) {
+  clearError(); last = { blob, name }; $("retry").hidden = true;
+  busy = true; render(document.body.dataset.state);
+  if ($("player").src) URL.revokeObjectURL($("player").src);
+  $("player").src = URL.createObjectURL(blob); $("player").hidden = false;
+  $("text").className = "text placeholder"; $("copy").hidden = true; $("meta").textContent = "";
+  const started = Date.now(); let deadline = null;
+  const tick = () => $("text").innerHTML = `<span class="spin"></span>Transcribing… ${fmt((Date.now() - started) / 1000)}`;
+  tick(); const t = setInterval(tick, 500);
+  try {
+    const fd = new FormData(); fd.append("file", blob, name);
+    const ctl = new AbortController(); deadline = setTimeout(() => ctl.abort(), 6 * 60 * 1000);
+    const r = await fetch("/api/transcribe", { method: "POST", body: fd, signal: ctl.signal });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || `Request failed (${r.status}).`);
+    $("text").className = "text"; $("text").textContent = j.text || "(no speech recognised)";
+    $("copy").hidden = !j.text;
+    const n = j.pieces.length;
+    $("meta").textContent = `${j.audio_seconds.toFixed(1)} s of audio · ${n} piece${n > 1 ? "s" : ""} · ` +
+      `transcribed in ${j.model_seconds.toFixed(1)} s`;
+  } catch (e) {
+    $("text").className = "text placeholder"; $("text").textContent = "Your transcript will appear here.";
+    showError(e.name === "AbortError" ? "The transcription took too long. Please try again." : e.message);
+    $("retry").hidden = false;
+  } finally {
+    clearInterval(t); clearTimeout(deadline); busy = false; poll();
+  }
+}
+$("retry").onclick = async () => { if (last && !busy && await confirmReady()) send(last.blob, last.name); };
+$("copy").onclick = async () => {
+  await navigator.clipboard.writeText($("text").textContent);
+  $("copy").textContent = "Copied"; setTimeout(() => $("copy").textContent = "Copy", 1500);
+};
+
+wake();
+</script>
+</body>
+</html>
