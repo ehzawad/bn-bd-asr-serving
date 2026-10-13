@@ -2,6 +2,10 @@
 
 Serving and fast batch inference for [`ehzawad/Voxtral-Mini-3B-2507-bn-BD`](https://huggingface.co/ehzawad/Voxtral-Mini-3B-2507-bn-BD) (private), a Bangla (Bangladesh) speech-to-text fine-tune of Voxtral Mini 3B, with [vLLM](https://docs.vllm.ai) 0.31.
 
+**Live demo: <https://ehzawad-56775--voxtral-bn-asr.us-east.modal.run>.** Record or upload Bangla speech and get the transcript; it works on phones too.
+- **Cold start:** the GPU sleeps when idle, so the first visit wakes it, which takes about 1–3 minutes. The page stays locked until the model is ready.
+- **Idle cost:** nothing runs, and nothing is billed, 10 minutes after the last use.
+
 | Folder | What it is |
 |---|---|
 | [`modal_deployment/`](modal_deployment/) | Two Modal microservices: a vLLM inference service on one NVIDIA L4 and a small web page where people record or upload Bangla speech. Both scale to zero after idle minutes. |

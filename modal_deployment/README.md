@@ -1,5 +1,7 @@
 # Modal deployment
 
+**Live:** <https://ehzawad-56775--voxtral-bn-asr.us-east.modal.run> (the frontend app below; the page wakes the inference app when it is opened).
+
 Two Modal apps, deployed and scaled independently:
 
 ```
