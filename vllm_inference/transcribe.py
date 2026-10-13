@@ -13,8 +13,8 @@ joined them. Prompts are built exactly as vLLM's transcription endpoint builds t
 for Voxtral, so this tool, serve.sh + client.py and the Modal service all send the
 model the same input.
 
-CUDA graphs are on by default (faster decoding after a slower start); --eager matches
-the engine mode of the benchmark's accuracy run. One JSON object per input file is
+CUDA graphs are on by default (faster decoding after a slower start), as in the
+benchmark's batch-1 run; --eager starts faster. One JSON object per input file is
 written, in input order; a piece that reached the token cap usually means the model
 fell into a repetition loop and is flagged.
 """

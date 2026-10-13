@@ -22,9 +22,9 @@ SERVED_MODEL_NAME = "voxtral-mini-bn-bd"
 VLLM_PORT = 8000
 MINUTES = 60
 
-# Eager mode skips torch.compile and CUDA-graph capture: a shorter cold start, and
-# the engine mode the accuracy benchmark ran in. False gives faster decoding after
-# a slower boot (compile artifacts are cached in the vllm-cache Volume).
+# Eager mode skips torch.compile and CUDA-graph capture, for a shorter cold start.
+# False gives faster decoding after a slower boot (compile artifacts are cached in
+# the vllm-cache Volume). Both modes give the same FLEURS WER in the benchmark.
 FAST_BOOT = True
 
 image = (

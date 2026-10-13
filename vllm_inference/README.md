@@ -17,7 +17,7 @@ python transcribe.py a.wav b.m4a                             # JSONL to stdout
 python transcribe.py --list files.txt --out out.jsonl --eager
 ```
 
-- **How it decodes:** pieces from many files go through vLLM's continuous batching, with CUDA graphs on by default. `--eager` starts faster but decodes more slowly, and matches the benchmark's engine mode.
+- **How it decodes:** pieces from many files go through vLLM's continuous batching, with CUDA graphs on by default. The benchmark's batch-1 run used CUDA graphs too. `--eager` starts faster but decodes more slowly.
 - **Speed:** on an A100-40GB, the 920 FLEURS test clips (3.43 h of audio, 940 pieces) took 31 s of generation, 395× real time. Audio prep took 9 s and engine load 56 s.
 - **Output:** one JSON object per file, in input order, with these fields:
   - `text` and `pieces`
@@ -41,8 +41,9 @@ The server can also be called directly with any OpenAI-style client: `POST /v1/a
 
 ## Parity with the benchmark
 
-FLEURS test, against the benchmark's transcripts:
+FLEURS test, against the benchmark's earlier batched decode:
 - `transcribe.py` matched 875/920 transcripts, with WER 14.72% against the benchmark's 14.73%.
 - `client.py` against `serve.sh` matched 283 of the first 300 transcripts.
+- The benchmark's own batch-1 run matched 860/920, with the same WER.
 
 Engine settings (CUDA graphs, batch composition, GPU type) change a few transcripts in both directions, but not the aggregate WER.
