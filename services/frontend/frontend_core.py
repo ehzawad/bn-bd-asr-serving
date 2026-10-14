@@ -73,9 +73,11 @@ WAKE_DEADLINE_S = 20 * 60
 INTEREST_S = 60  # a wake loop stops once nobody has asked about its model for this long
 NOT_READY = "The model is not ready yet. The page unlocks when it is."
 # Containers ffmpeg may open for us: audio and video formats only, never playlists or concat
-# lists, which could make it read other files.
+# lists, which could make it read other files. -format_whitelist refuses anything else before the
+# input is opened.
 FFMPEG_FORMATS = {"mov", "mp4", "m4a", "3gp", "3g2", "mj2", "matroska", "webm", "ogg", "mp3", "aac",
                   "wav", "flac", "aiff", "caf", "amr", "wv", "asf", "avi", "flv", "mpegts", "mpeg"}
+FFMPEG_INPUT = ["-protocol_whitelist", "file", "-format_whitelist", ",".join(sorted(FFMPEG_FORMATS))]
 # asr_core.py is copied verbatim from github.com/ehzawad/bengali-asr-benchmark@5cccd1a
 ASR_CORE_SHA256 = "f894ef44ae4834fc80878f8b206e65e8321a0014807559494af0eb8880638a18"
 
@@ -347,7 +349,7 @@ def create_app(serve_fns: dict, api_key: str, asr_core, static_dir: Path, *, tra
         with tempfile.TemporaryDirectory() as d:
             src, dst = Path(d) / "upload", Path(d) / "decoded.wav"
             src.write_bytes(data)
-            p = subprocess.run(["ffprobe", "-v", "error", "-protocol_whitelist", "file", "-show_entries",
+            p = subprocess.run(["ffprobe", "-v", "error", *FFMPEG_INPUT, "-show_entries",
                                 "format=format_name", "-of", "default=nw=1:nk=1", str(src)],
                                capture_output=True, text=True, timeout=30)
             if p.returncode != 0:
@@ -356,7 +358,7 @@ def create_app(serve_fns: dict, api_key: str, asr_core, static_dir: Path, *, tra
                 raise AudioRejected(415, "This file type is not supported.")
             max_bytes = max_decoded_samples * 4
             r = subprocess.run(
-                ["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file", "-i", str(src),
+                ["ffmpeg", "-nostdin", "-v", "error", *FFMPEG_INPUT, "-i", str(src),
                  "-map", "0:a:0", "-t", str(MAX_SECONDS + DURATION_GRACE_S + 1), "-fs", str(max_bytes),
                  "-c:a", "pcm_f32le", "-f", "wav", str(dst)],
                 capture_output=True, timeout=180)
