@@ -33,6 +33,15 @@
   h1 .bn { font-family: "Noto Sans Bengali", sans-serif; font-weight: 600; }
   h1 .en::before { content: "· "; color: var(--muted); }
   .sub { color: var(--muted); margin: 0 0 20px; font-size: .95rem; }
+  .models { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 14px; }
+  .models button { display: flex; flex-direction: column; gap: 2px; text-align: left; font: inherit; cursor: pointer;
+                   border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 12px;
+                   padding: 10px 12px; }
+  .models b { font-weight: 600; }
+  .models span { color: var(--muted); font-size: .85rem; }
+  .models button[aria-checked="true"] { border-color: var(--accent); background: var(--accent-soft);
+                                        box-shadow: inset 0 0 0 1px var(--accent); }
+  .models button:disabled { opacity: .55; cursor: not-allowed; }
   .status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 12px;
             background: var(--warn-soft); color: var(--warn); font-weight: 500; margin-bottom: 16px; }
   .status .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex: none; }
@@ -87,6 +96,7 @@
     h1 { font-size: 1.3rem; } h1 .en { display: block; font-size: 1.05rem; font-weight: 500; color: var(--muted); }
     h1 .en::before { content: none; }
     .card { padding: 16px; border-radius: 14px; }
+    .models button { padding: 9px 10px; }
     .text { font-size: 1.2rem; }
     .recbtn { width: 96px; height: 96px; }
   }
@@ -95,7 +105,12 @@
 <body data-state="waking">
 <main>
   <h1><span class="bn">বাংলা কথা থেকে লেখা</span> <span class="en">Bangla speech to text</span></h1>
-  <p class="sub">Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · served with vLLM on an NVIDIA L4</p>
+  <p class="sub" id="sub">Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · served with vLLM on an NVIDIA L4</p>
+
+  <div class="models" role="radiogroup" aria-label="Model">
+    <button role="radio" aria-checked="true" data-model="voxtral"><b>Voxtral Mini 3B</b><span>Audio LLM · vLLM</span></button>
+    <button role="radio" aria-checked="false" data-model="hybrid"><b>FastConformer hybrid</b><span>115M transducer · NeMo</span></button>
+  </div>
 
   <div class="status" role="status" aria-live="polite">
     <span class="dot"></span><span class="grow" id="status">Connecting…</span>
@@ -149,6 +164,30 @@ const $ = (id) => document.getElementById(id);
 let ready = false, busy = false, wakeSeen = null, pollT = null, tickT = null;
 let cfg = { max_seconds: 600, idle_minutes: 10 };
 
+// Each model is its own GPU service; only the selected one is woken. The choice is kept in the
+// URL (?model=) and, where storage works, for the next visit.
+const MODELS = {
+  voxtral: { short: "Voxtral Mini", cold: "about 1–3 minutes",
+             sub: "Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · served with vLLM on an NVIDIA L4" },
+  hybrid: { short: "FastConformer hybrid", cold: "about 1 minute",
+            sub: "FastConformer hybrid RNN-T/CTC (115M), fine-tuned for Bangla (Bangladesh) · NeMo, RNN-T decoding, on an NVIDIA L4" },
+};
+const hasModel = (m) => Object.prototype.hasOwnProperty.call(MODELS, m ?? "");
+let model = (() => {
+  const q = new URLSearchParams(location.search).get("model");
+  if (hasModel(q)) return q;
+  try { const s = localStorage.getItem("model"); if (hasModel(s)) return s; } catch {}
+  return "voxtral";
+})();
+// Every wake (and so every model switch) starts a new generation; an answer that arrives for an
+// older one is dropped, so it can neither repaint the page nor start a second polling loop.
+let gen = 0;
+// finishing: a recording was stopped and its audio is not sent yet; pending: a readiness check
+// right before sending is in flight. Both lock the model picker, like recording and busy.
+let finishing = false, pending = false;
+const locked = () => recording() || finishing || busy || starting || pending;
+const api = (path, extra = "") => `${path}?model=${model}${extra}`;
+
 async function getJSON(url, opts = {}, ms = 15000) {
   const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
   try { const r = await fetch(url, { cache: "no-store", ...opts, signal: ctl.signal }); return await r.json(); }
@@ -163,33 +202,56 @@ function render(state) {
   clearInterval(tickT);
   if (state === "ready") {
     wakeSeen = null;
-    $("status").textContent = "Ready. Record or upload Bangla speech.";
+    $("status").textContent = `${MODELS[model].short} is ready. Record or upload Bangla speech.`;
   } else if (state === "waking") {
     wakeSeen ??= Date.now();
     const show = () => $("status").textContent =
-      `Waking the model on the GPU… ${fmt((Date.now() - wakeSeen) / 1000)} · a cold start takes about 1–3 minutes`;
+      `Waking ${MODELS[model].short} on the GPU… ${fmt((Date.now() - wakeSeen) / 1000)} · a cold start takes ${MODELS[model].cold}`;
     show(); tickT = setInterval(show, 1000);
   } else if (state === "asleep") {
-    $("status").textContent = `The model is asleep (it sleeps after ${cfg.idle_minutes} idle minutes to save GPU cost).`;
+    $("status").textContent = `${MODELS[model].short} is asleep (it sleeps after ${cfg.idle_minutes} idle minutes to save GPU cost).`;
     $("lock").textContent = "Wake the model to record or upload.";
   } else if (state === "error") {
-    $("status").textContent = "The model did not start. Try waking it again in a few minutes.";
+    $("status").textContent = `${MODELS[model].short} did not start. Try waking it again in a few minutes.`;
     $("lock").textContent = "Wake the model to record or upload.";
   } else {
     $("status").textContent = "Cannot reach the service. Retrying…";
   }
   if (state === "waking") $("lock").textContent = "The model is starting. This unlocks by itself when it is ready.";
   if (state === "offline") $("lock").textContent = "Cannot reach the service. Retrying…";
-  $("recbtn").disabled = recording() ? false : (!ready || busy);
-  $("pick").disabled = !ready || busy || recording();
+  $("recbtn").disabled = recording() ? false : (!ready || locked());
+  $("pick").disabled = !ready || locked();
+  paintModels();
 }
+
+function paintModels() {
+  const lock = locked();
+  document.querySelectorAll(".models button").forEach((b) => {
+    b.setAttribute("aria-checked", b.dataset.model === model); b.disabled = lock;
+  });
+  $("sub").textContent = MODELS[model].sub;
+  // After a transcript from the other model, offer the same audio to this one.
+  const other = last && last.model !== model;
+  $("retry").hidden = !last || busy || !(lastFailed || other);
+  $("retry").textContent = other ? `Transcribe with ${MODELS[model].short}` : "Try again";
+  $("retry").disabled = !ready || pending;
+}
+function selectModel(m) {
+  if (!hasModel(m) || locked()) return;
+  if (m === model) { if (paused) { paused = false; wake(); } return; }
+  paused = false; model = m; wakeSeen = null; clearError();
+  try { localStorage.setItem("model", m); } catch {}
+  const u = new URL(location.href); u.searchParams.set("model", m); history.replaceState(null, "", u);
+  wake();
+}
+document.querySelectorAll(".models button").forEach((b) => b.onclick = () => selectModel(b.dataset.model));
 
 // After IDLE_MS without a tap or key press (and never while recording or transcribing) the
 // page stops polling. The CPU frontend then stops 5 minutes later and the GPU 10 minutes after
 // its last request, so nothing runs 10 minutes after the last tap. A tap resumes and wakes.
 const IDLE_MS = 5 * 60 * 1000;
 let lastActive = Date.now(), paused = false;
-const active = () => recording() || busy || Date.now() - lastActive < IDLE_MS;
+const active = () => recording() || finishing || busy || Date.now() - lastActive < IDLE_MS;
 function pause() {
   paused = true; ready = false;
   clearTimeout(pollT); clearInterval(tickT);
@@ -198,42 +260,54 @@ function pause() {
   $("status").textContent = "Paused after 5 idle minutes; the servers shut down soon to save cost. Tap anywhere to continue.";
   $("lock").textContent = "Tap anywhere to continue.";
   $("recbtn").disabled = true; $("pick").disabled = true;
+  paintModels();
 }
-for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, () => {
+for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, (e) => {
   lastActive = Date.now();
-  if (paused) { paused = false; wake(); }
+  // A tap on the model picker resumes through selectModel, which wakes only the chosen model.
+  const onPicker = e.target instanceof Element && e.target.closest(".models");
+  if (paused && !onPicker) { paused = false; wake(); }
 }, { passive: true });
 
 async function poll() {
   clearTimeout(pollT);
   if (document.hidden) return;  // resumes on visibilitychange
   if (!active()) return pause();
+  const g = gen;
   try {
-    // Only while recording does a poll reach vLLM itself; that keeps the GPU warm for the
+    // Only while recording does a poll reach the model itself; that keeps the GPU warm for the
     // recording in progress. Other polls read autoscaler stats and never touch the GPU.
-    const s = await getJSON(recording() ? "/api/status?probe=1" : "/api/status");
+    const s = await getJSON(api("/api/status", recording() ? "&probe=1" : ""));
+    if (g !== gen) return;  // a newer wake or switch runs its own polling
     cfg = s; render(s.state);
     if (s.state === "asleep" && (recording() || busy)) return wake();
-  } catch { render("offline"); }
+  } catch { if (g !== gen) return; render("offline"); }
   // Once ready, status reads autoscaler stats only, so polling never keeps the GPU awake.
-  pollT = setTimeout(poll, ready ? 20000 : 2000);
+  clearTimeout(pollT); pollT = setTimeout(poll, ready ? 20000 : 2000);
 }
 
 async function wake() {
+  const g = ++gen;
   clearTimeout(pollT);
   render("waking");
-  try { cfg = await getJSON("/api/wake", { method: "POST" }); render(cfg.state); }
-  catch { render("offline"); }
-  pollT = setTimeout(poll, 2000);
+  try {
+    const s = await getJSON(api("/api/wake"), { method: "POST" });
+    if (g !== gen) return;
+    cfg = s; render(s.state);
+  } catch { if (g !== gen) return; render("offline"); }
+  clearTimeout(pollT); pollT = setTimeout(poll, 2000);
 }
 $("wake").onclick = wake;
 
 // The controls unlock only on "ready", but that can be a few seconds old: confirm with vLLM
 // itself right before recording or uploading.
 async function confirmReady() {
+  const g = gen;
   try {
-    cfg = await getJSON("/api/status?probe=1"); render(cfg.state);
-  } catch { render("offline"); }
+    const s = await getJSON(api("/api/status", "&probe=1"));
+    if (g !== gen) return false;
+    cfg = s; render(s.state);
+  } catch { if (g !== gen) return false; render("offline"); }
   if (!ready) { showError("The model is not ready yet. This page unlocks by itself when it is."); clearTimeout(pollT); pollT = setTimeout(poll, 2000); }
   return ready;
 }
@@ -256,7 +330,7 @@ function mimeAndExt() {
 }
 let starting = false;
 async function startRec() {
-  if (starting) return;  // a second tap during the readiness check must not open a second recorder
+  if (starting || locked()) return;  // a second tap during the readiness check must not open a second recorder
   starting = true; $("recbtn").disabled = true;
   try { await startRecording(); } finally { starting = false; render(document.body.dataset.state); }
 }
@@ -304,6 +378,7 @@ async function startRecording() {
     cancelAnimationFrame(raf); if (actx) { actx.close(); actx = null; } $("level").style.width = "0";
     clearInterval(recT);
     $("recbtn").classList.remove("on"); $("recbtn").setAttribute("aria-label", "Start recording");
+    finishing = false;  // send() takes the lock over (busy) without yielding
     send(new Blob(parts, { type: rec.mimeType || mime }), `recording.${ext}`);
   };
   rec.start(1000);
@@ -313,7 +388,7 @@ async function startRecording() {
   recT = setInterval(() => {
     const s = (Date.now() - t0) / 1000;
     $("timer").textContent = `${fmt(s)} / ${fmt(cfg.max_seconds)}`;
-    if (s >= cfg.max_seconds - 1 && recording()) rec.stop();
+    if (s >= cfg.max_seconds - 1 && recording()) stopRec();
   }, 250);
   if (actx) {  // level meter only; recording does not depend on it
     if (actx.state === "suspended") actx.resume();
@@ -326,26 +401,41 @@ async function startRecording() {
     draw();
   }
 }
-$("recbtn").onclick = () => recording() ? rec.stop() : startRec();
+function stopRec() {
+  if (!recording()) return;
+  finishing = true;  // recording() turns false at stop(), before the audio arrives in onstop
+  rec.stop();
+  render(document.body.dataset.state);
+}
+$("recbtn").onclick = () => recording() ? stopRec() : startRec();
 
 // Upload
 $("pick").onclick = () => $("file").click();
-$("file").onchange = async () => {
+// Reserve the page before the readiness check, so a double tap cannot send the audio twice.
+async function checkedSend(blob, name) {
+  if (locked()) return;
+  pending = true; render(document.body.dataset.state);
+  try { if (await confirmReady()) send(blob, name); }
+  finally { pending = false; render(document.body.dataset.state); }
+}
+$("file").onchange = () => {
   const f = $("file").files[0]; $("file").value = "";
-  if (f && await confirmReady()) send(f, f.name);
+  if (f) checkedSend(f, f.name);
 };
 const drop = $("drop");
 drop.ondragover = (e) => { e.preventDefault(); if (ready && !busy) drop.classList.add("over"); };
 drop.ondragleave = () => drop.classList.remove("over");
-drop.ondrop = async (e) => { e.preventDefault(); drop.classList.remove("over");
-  const f = e.dataTransfer.files[0]; if (f && ready && !busy && await confirmReady()) send(f, f.name); };
+drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over");
+  const f = e.dataTransfer.files[0]; if (f && ready) checkedSend(f, f.name); };
 
 // Transcribe
 function clearError() { $("error").hidden = true; }
 function showError(msg) { $("error").textContent = msg; $("error").hidden = false; }
-let last = null;
+let last = null, lastFailed = false;
 async function send(blob, name) {
-  clearError(); last = { blob, name }; $("retry").hidden = true;
+  if (busy) return;
+  const m = model;
+  clearError(); last = { blob, name, model: m }; lastFailed = false;
   busy = true; render(document.body.dataset.state);
   if ($("player").src) URL.revokeObjectURL($("player").src);
   $("player").src = URL.createObjectURL(blob); $("player").hidden = false;
@@ -354,7 +444,7 @@ async function send(blob, name) {
   const tick = () => $("text").innerHTML = `<span class="spin"></span>Transcribing… ${fmt((Date.now() - started) / 1000)}`;
   tick(); const t = setInterval(tick, 500);
   try {
-    const fd = new FormData(); fd.append("file", blob, name);
+    const fd = new FormData(); fd.append("file", blob, name); fd.append("model", m);
     const ctl = new AbortController(); deadline = setTimeout(() => ctl.abort(), 6 * 60 * 1000);
     const r = await fetch("/api/transcribe", { method: "POST", body: fd, signal: ctl.signal });
     const j = await r.json().catch(() => ({}));
@@ -362,22 +452,23 @@ async function send(blob, name) {
     $("text").className = "text"; $("text").textContent = j.text || "(no speech recognised)";
     $("copy").hidden = !j.text;
     const n = j.pieces.length;
-    $("meta").textContent = `${j.audio_seconds.toFixed(1)} s of audio · ${n} piece${n > 1 ? "s" : ""} · ` +
-      `transcribed in ${j.model_seconds.toFixed(1)} s`;
+    $("meta").textContent = `${MODELS[m].short} · ${j.audio_seconds.toFixed(1)} s of audio · ` +
+      `${n} piece${n > 1 ? "s" : ""} · transcribed in ${j.model_seconds.toFixed(1)} s`;
   } catch (e) {
     $("text").className = "text placeholder"; $("text").textContent = "Your transcript will appear here.";
     showError(e.name === "AbortError" ? "The transcription took too long. Please try again." : e.message);
-    $("retry").hidden = false;
+    lastFailed = true;
   } finally {
-    clearInterval(t); clearTimeout(deadline); busy = false; poll();
+    clearInterval(t); clearTimeout(deadline); busy = false; paintModels(); poll();
   }
 }
-$("retry").onclick = async () => { if (last && !busy && await confirmReady()) send(last.blob, last.name); };
+$("retry").onclick = () => { if (last) checkedSend(last.blob, last.name); };
 $("copy").onclick = async () => {
   await navigator.clipboard.writeText($("text").textContent);
   $("copy").textContent = "Copied"; setTimeout(() => $("copy").textContent = "Copy", 1500);
 };
 
+paintModels();
 wake();
 </script>
 </body>
