@@ -1,15 +1,19 @@
 """The frontend's web app, free of Modal so it can be tested offline (test_frontend.py);
-frontend_app.py wraps it for Modal.
+modal_app.py wraps it for Modal.
 
-Models. The page offers each model in MODELS; each is its own inference app on its own GPU,
-woken and tracked separately, and every endpoint takes ?model= (a form field for
-/api/transcribe). Only the model the page has selected is woken. Both inference apps answer
-the same two routes: /health (200 once the model is ready) and /v1/audio/transcriptions.
+Models. The page offers each model in MODELS; each is its own inference service (a Modal app
+under services/) on its own GPU, woken and tracked separately, and every endpoint takes ?model=
+(a form field for /api/transcribe). Only the model the page has selected is woken. Every
+inference service answers the same contract, so this app treats them alike:
+  - GET /health: 200 only once the model is ready;
+  - POST /v1/audio/transcriptions (Authorization: Bearer VLLM_API_KEY): one <= 25 s piece as a
+    16 kHz PCM16 WAV, with the OpenAI form fields sent by transcribe_piece, answering {"text"};
+  - its Modal web function is named "serve".
 
 Readiness. Nobody can record, upload or transcribe until the model's /health has answered
-200, which it only does once the model has fully loaded. When the page woke Voxtral, it also
-waits for one short warm-up transcription, because a fresh vLLM spends about a second more on
-its first request; the hybrid's server warms itself up before it answers /health.
+200, which it only does once the model has fully loaded. For a model with warm_up set
+(Voxtral), an explicit wake also waits for one short warm-up transcription, because a fresh
+vLLM spends about a second more on its first request.
   - /api/status reads Modal's autoscaler stats and never wakes a sleeping model, so polling
     cannot keep the GPU awake. Only when a container already exists but is not yet confirmed
     (it is starting, or this frontend restarted) does status start a wake loop that asks
@@ -24,12 +28,11 @@ its first request; the hybrid's server warms itself up before it answers /health
     GPU), then asks the model directly right before sending any audio, and refuses with 503
     (starting the wake) if it does not answer.
 
-Audio follows the benchmark's path unchanged for both models: asr_core.load_audio (16 kHz
+Audio follows the benchmark's path unchanged for every model: asr_core.load_audio (16 kHz
 mono), asr_core.chunks (<= 25 s pieces cut at pauses, no VAD), each piece staged as a PCM16
 WAV and sent to the model's /v1/audio/transcriptions, and the pieces' texts joined with single
-spaces. Voxtral Mini decodes in vLLM (greedy, language "bn", at most 500 new tokens); the hybrid
-FastConformer in NeMo (its RNN-T decoder, greedy, batch 1). Uploads are bounded before they are
-parsed and before they are decoded, and nothing is stored.
+spaces. Voxtral Mini decodes in vLLM (greedy, language "bn", at most 500 new tokens). Uploads are
+bounded before they are parsed and before they are decoded, and nothing is stored.
 """
 import asyncio
 import hashlib
@@ -49,16 +52,14 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
-# One inference app per model; `app` is its Modal app, whose web function is named "serve".
-# warm_up: the frontend sends one warm-up piece after waking it (vLLM's first request is slow);
-# the hybrid's server decodes its own warm-up piece before it answers anything.
+# One inference service per model; `app` is its Modal app, whose web function is named "serve".
+# To offer another model, deploy its service and add it here and to MODELS in static/index.html.
+# warm_up: after an explicit wake the frontend sends one warm-up piece (vLLM's first request is
+# slow); a service that warms itself up before it answers /health sets False.
 MODELS = {
     "voxtral": {"label": "Voxtral Mini 3B bn-BD", "short": "Voxtral Mini", "app": "voxtral-mini-bn-inference",
                 "served_model": "voxtral-mini-bn-bd", "engine": "vLLM", "gpu": "NVIDIA L4",
                 "cold_start": "about 1–3 minutes", "warm_up": True},
-    "hybrid": {"label": "FastConformer hybrid bn-BD", "short": "FastConformer hybrid",
-               "app": "fastconformer-hybrid-bn-inference", "served_model": "fastconformer-hybrid-bn-bd",
-               "engine": "NeMo, RNN-T", "gpu": "NVIDIA L4", "cold_start": "about 1 minute", "warm_up": False},
 }
 DEFAULT_MODEL = "voxtral"
 MAX_SECONDS = 10 * 60  # longest recording or upload accepted

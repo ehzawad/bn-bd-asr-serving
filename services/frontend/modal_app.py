@@ -1,23 +1,26 @@
-"""Frontend microservice: one page where people record or upload Bangla (Bangladesh)
-speech, pick Voxtral Mini bn-BD or the FastConformer hybrid bn-BD, and read the transcript.
-CPU only; it holds no model and calls the inference apps over HTTP. The web app itself lives
-in frontend_core.py.
+"""Frontend microservice: one page where people record or upload Bangla (Bangladesh) speech,
+pick a model, and read the transcript. CPU only; it holds no model and calls each model's
+inference service over HTTP. The web app itself lives in frontend_core.py, and the models it
+offers are its MODELS registry.
 
-    modal deploy modal_deployment/frontend_app.py
+    modal deploy services/frontend/modal_app.py
 
-The page wakes only the selected model's inference app when it loads (or when the model is
+The page wakes only the selected model's inference service when it loads (or when the model is
 switched) and stays locked until that model reports ready; it stops polling after 5 idle
-minutes or while hidden, so every app can scale to zero and nothing is billed while nobody
+minutes or while hidden, so every service can scale to zero and nothing is billed while nobody
 uses it.
 """
 from pathlib import Path
 
 import modal
 
-APP_NAME = "voxtral-mini-bn-frontend"
+APP_NAME = "voxtral-mini-bn-frontend"  # kept from the first deployment, with the page's URL label
 MINUTES = 60
 
 HERE = Path(__file__).parent
+# Only `modal deploy` reads it. The container imports this file as /root/modal_app.py, where
+# parents[1] does not exist, so this must stay plain .parent arithmetic.
+SHARED = HERE.parent.parent / "shared"
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg")  # browser recordings arrive as WebM/Opus or MP4/AAC
@@ -29,7 +32,7 @@ image = (
         "librosa==1.0.0",
         "soxr==1.1.0",
     )
-    .add_local_file(HERE / "asr_core.py", "/root/asr_core.py")
+    .add_local_file(SHARED / "asr_core.py", "/root/asr_core.py")
     .add_local_file(HERE / "frontend_core.py", "/root/frontend_core.py")
     .add_local_dir(HERE / "static", "/root/static")
 )
@@ -39,7 +42,7 @@ app = modal.App(APP_NAME)
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name("voxtral-bn-vllm-key")],  # VLLM_API_KEY, shared with both inference apps
+    secrets=[modal.Secret.from_name("voxtral-bn-vllm-key")],  # VLLM_API_KEY, shared with the inference services
     scaledown_window=5 * MINUTES,  # idle time before this CPU container stops
     timeout=15 * MINUTES,
     max_containers=1,  # one process holds the wake state

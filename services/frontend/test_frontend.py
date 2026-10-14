@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """Offline check of the frontend's readiness gating, model selection and upload handling, against
-fake Modal autoscalers and fake inference servers for both models (no Modal, no GPU). Needs: fastapi, httpx, python-multipart,
-numpy, soundfile, librosa, and ffmpeg/ffprobe on PATH.
+fake Modal autoscalers and fake inference servers (no Modal, no GPU). Model selection is checked
+with a test-only second model whose server, like any service with warm_up False, needs no warm-up.
+Needs: fastapi, httpx, python-multipart, numpy, soundfile, librosa, and ffmpeg/ffprobe on PATH.
 
-    python modal_deployment/test_frontend.py
+    python services/frontend/test_frontend.py
 """
 import asyncio
 import io
@@ -18,8 +19,13 @@ import numpy as np
 import soundfile as sf
 
 HERE = Path(__file__).resolve().parent
+SHARED = HERE.parents[1] / "shared"
 sys.path.insert(0, str(HERE))
 import frontend_core  # noqa: E402
+
+# A second inference service, registered for these tests only.
+frontend_core.MODELS["other"] = {**frontend_core.MODELS["voxtral"], "label": "Other test model", "short": "Other",
+                                 "app": "other-test-inference", "served_model": "other-test-model", "warm_up": False}
 
 
 class Fake:
@@ -62,7 +68,7 @@ class Fake:
                     self.fail_next_piece = False
                     return httpx.Response(500)
                 return httpx.Response(200, json={"text": ""})
-            self.models_seen += [m for m in ("voxtral-mini-bn-bd", "fastconformer-hybrid-bn-bd") if m.encode() in body]
+            self.models_seen += [m for m in ("voxtral-mini-bn-bd", "other-test-model") if m.encode() in body]
             self.transcriptions += 1
             if self.fail_next_piece:
                 self.fail_next_piece = False
@@ -93,16 +99,16 @@ def ffmpeg_convert(data: bytes, suffix: str, args):
 
 
 async def main():
-    fake, hyb = Fake("voxtral.test"), Fake("hybrid.test")
-    fakes = {f.host: f for f in (fake, hyb)}
+    fake, oth = Fake("voxtral.test"), Fake("other.test")
+    fakes = {f.host: f for f in (fake, oth)}
 
     async def route(request):
         return await fakes[request.url.host].handler(request)
 
-    asr_core = frontend_core.load_asr_core(HERE / "asr_core.py")
+    asr_core = frontend_core.load_asr_core(SHARED / "asr_core.py")
     opts = dict(transport=httpx.MockTransport(route), wake_probe_timeout=0.05, wake_retry_s=0.05,
                 stats_grace_s=0.3, max_upload_bytes=3_000_000, max_decoded_samples=2_000_000)
-    serve_fns = {"voxtral": fake, "hybrid": hyb}
+    serve_fns = {"voxtral": fake, "other": oth}
     app = frontend_core.create_app(serve_fns, "test-key", asr_core, HERE / "static", **opts)
     c = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://frontend.test")
     failures = []
@@ -185,35 +191,35 @@ async def main():
           fake.warmups == 1 and not fake.fail_next_piece and fake.transcriptions == 4)
 
     # Model selection: each model is woken, tracked and sent audio on its own.
-    check("the hybrid model is untouched by everything above",
-          hyb.health_calls == 0 and hyb.runners == 0 and hyb.transcriptions == 0)
-    check("the hybrid model is asleep while Voxtral is ready",
-          await state(model="hybrid") == "asleep" and await state() == "ready")
-    r = await post(wav, model="hybrid")
-    check("transcribe with the hybrid model while it sleeps is refused with 503 and wakes only it",
-          r.status_code == 503 and hyb.runners == 1 and hyb.transcriptions == 0)
-    hyb.up = True
-    check("the hybrid model becomes ready on its own, with no frontend warm-up (its server warms itself)",
-          await until("ready", model="hybrid") and hyb.warmups == 0)
+    check("the other model is untouched by everything above",
+          oth.health_calls == 0 and oth.runners == 0 and oth.transcriptions == 0)
+    check("the other model is asleep while Voxtral is ready",
+          await state(model="other") == "asleep" and await state() == "ready")
+    r = await post(wav, model="other")
+    check("transcribe with the other model while it sleeps is refused with 503 and wakes only it",
+          r.status_code == 503 and oth.runners == 1 and oth.transcriptions == 0)
+    oth.up = True
+    check("the other model becomes ready on its own, with no frontend warm-up (warm_up False)",
+          await until("ready", model="other") and oth.warmups == 0)
     n_v = fake.transcriptions
-    r = await post(audio_file(60.0), "long.wav", model="hybrid")
-    check("hybrid audio goes to the hybrid server only, under its model name, in 3 pieces",
-          r.status_code == 200 and r.json()["model"] == "hybrid" and len(r.json()["pieces"]) == 3
-          and hyb.transcriptions == 3 and fake.transcriptions == n_v
-          and hyb.models_seen == ["fastconformer-hybrid-bn-bd"] * 3)
+    r = await post(audio_file(60.0), "long.wav", model="other")
+    check("its audio goes to its own server only, under its model name, in 3 pieces",
+          r.status_code == 200 and r.json()["model"] == "other" and len(r.json()["pieces"]) == 3
+          and oth.transcriptions == 3 and fake.transcriptions == n_v
+          and oth.models_seen == ["other-test-model"] * 3)
     r = await post(wav)
     check("without a model field, audio goes to Voxtral under its model name",
           r.status_code == 200 and r.json()["model"] == "voxtral" and fake.models_seen[-1] == "voxtral-mini-bn-bd")
-    hyb.up, hyb.runners = False, 0
+    oth.up, oth.runners = False, 0
     await asyncio.sleep(0.35)
-    check("the hybrid model scaling to zero leaves Voxtral ready",
-          await state(model="hybrid") == "asleep" and await state() == "ready")
-    st = (await c.post("/api/wake", params={"model": "hybrid"})).json()
+    check("the other model scaling to zero leaves Voxtral ready",
+          await state(model="other") == "asleep" and await state() == "ready")
+    st = (await c.post("/api/wake", params={"model": "other"})).json()
     await asyncio.sleep(0.05)  # the wake loop's first /health request
-    check("/api/wake?model=hybrid wakes the hybrid model and names it",
-          st["state"] == "waking" and st["model"] == "hybrid" and hyb.runners == 1)
-    hyb.up = True
-    check("ready again, still without a frontend warm-up", await until("ready", model="hybrid") and hyb.warmups == 0)
+    check("/api/wake?model=other wakes the other model and names it",
+          st["state"] == "waking" and st["model"] == "other" and oth.runners == 1)
+    oth.up = True
+    check("ready again, still without a frontend warm-up", await until("ready", model="other") and oth.warmups == 0)
     check("an unknown model is refused by status, wake and transcribe",
           (await c.get("/api/status", params={"model": "x"})).status_code == 400
           and (await c.post("/api/wake", params={"model": "x"})).status_code == 400

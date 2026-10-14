@@ -33,7 +33,8 @@
   h1 .bn { font-family: "Noto Sans Bengali", sans-serif; font-weight: 600; }
   h1 .en::before { content: "· "; color: var(--muted); }
   .sub { color: var(--muted); margin: 0 0 20px; font-size: .95rem; }
-  .models { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 14px; }
+  .models { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 0 0 14px; }
+  .models[hidden] { display: none; }
   .models button { display: flex; flex-direction: column; gap: 2px; text-align: left; font: inherit; cursor: pointer;
                    border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 12px;
                    padding: 10px 12px; }
@@ -107,10 +108,7 @@
   <h1><span class="bn">বাংলা কথা থেকে লেখা</span> <span class="en">Bangla speech to text</span></h1>
   <p class="sub" id="sub">Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · served with vLLM on an NVIDIA L4</p>
 
-  <div class="models" role="radiogroup" aria-label="Model">
-    <button role="radio" aria-checked="true" data-model="voxtral"><b>Voxtral Mini 3B</b><span>Audio LLM · vLLM</span></button>
-    <button role="radio" aria-checked="false" data-model="hybrid"><b>FastConformer hybrid</b><span>115M transducer · NeMo</span></button>
-  </div>
+  <div class="models" id="models" role="radiogroup" aria-label="Model" hidden></div>
 
   <div class="status" role="status" aria-live="polite">
     <span class="dot"></span><span class="grow" id="status">Connecting…</span>
@@ -164,13 +162,12 @@ const $ = (id) => document.getElementById(id);
 let ready = false, busy = false, wakeSeen = null, pollT = null, tickT = null;
 let cfg = { max_seconds: 600, idle_minutes: 10 };
 
-// Each model is its own GPU service; only the selected one is woken. The choice is kept in the
+// Each model is its own GPU service; only the selected one is woken. The keys match MODELS in
+// frontend_core.py, and the picker shows once there are two or more. The choice is kept in the
 // URL (?model=) and, where storage works, for the next visit.
 const MODELS = {
-  voxtral: { short: "Voxtral Mini", cold: "about 1–3 minutes",
+  voxtral: { name: "Voxtral Mini 3B", kind: "Audio LLM · vLLM", short: "Voxtral Mini", cold: "about 1–3 minutes",
              sub: "Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · served with vLLM on an NVIDIA L4" },
-  hybrid: { short: "FastConformer hybrid", cold: "about 1 minute",
-            sub: "FastConformer hybrid RNN-T/CTC (115M), fine-tuned for Bangla (Bangladesh) · NeMo, RNN-T decoding, on an NVIDIA L4" },
 };
 const hasModel = (m) => Object.prototype.hasOwnProperty.call(MODELS, m ?? "");
 let model = (() => {
@@ -244,7 +241,15 @@ function selectModel(m) {
   const u = new URL(location.href); u.searchParams.set("model", m); history.replaceState(null, "", u);
   wake();
 }
-document.querySelectorAll(".models button").forEach((b) => b.onclick = () => selectModel(b.dataset.model));
+for (const [m, info] of Object.entries(MODELS)) {
+  const b = document.createElement("button");
+  b.setAttribute("role", "radio"); b.dataset.model = m;
+  b.append(Object.assign(document.createElement("b"), { textContent: info.name }),
+           Object.assign(document.createElement("span"), { textContent: info.kind }));
+  b.onclick = () => selectModel(m);
+  $("models").append(b);
+}
+$("models").hidden = Object.keys(MODELS).length < 2;
 
 // After IDLE_MS without a tap or key press (and never while recording or transcribing) the
 // page stops polling. The CPU frontend then stops 5 minutes later and the GPU 10 minutes after

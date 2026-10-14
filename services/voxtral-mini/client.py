@@ -30,20 +30,20 @@ import httpx
 import numpy as np
 import soundfile as sf
 
-HERE = Path(__file__).resolve().parent
+SHARED = Path(__file__).resolve().parents[2] / "shared"  # the repo's one asr_core.py
 ASR_CORE_SHA256 = "f894ef44ae4834fc80878f8b206e65e8321a0014807559494af0eb8880638a18"
 AUDIO_EXTS = {".wav", ".flac", ".mp3", ".m4a", ".mp4", ".ogg", ".opus", ".webm", ".aac", ".wma", ".aif", ".aiff"}
 
 
 def load_asr_core():
-    src = HERE / "asr_core.py"
+    src = SHARED / "asr_core.py"
     if hashlib.sha256(src.read_bytes()).hexdigest() != ASR_CORE_SHA256:
         sys.exit("asr_core.py is not the benchmark's copy")
     try:
         import torch  # noqa: F401
     except ImportError:  # asr_core needs torch only in decode(), the NeMo path, unused here
         sys.modules["torch"] = types.ModuleType("torch")
-    sys.path.insert(0, str(HERE))
+    sys.path.insert(0, str(SHARED))
     import asr_core
 
     return asr_core

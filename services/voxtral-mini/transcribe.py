@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-HERE = Path(__file__).resolve().parent
+SHARED = Path(__file__).resolve().parents[2] / "shared"  # the repo's one asr_core.py
 MODEL = "ehzawad/Voxtral-Mini-3B-2507-bn-BD"
 REVISION = "d1c7aeb0cd18f8a7a057bf756df5ee2ccb7aebcd"  # the benchmarked snapshot
 # asr_core.py is copied verbatim from github.com/ehzawad/bengali-asr-benchmark@5cccd1a
@@ -43,14 +43,14 @@ AUDIO_EXTS = {".wav", ".flac", ".mp3", ".m4a", ".mp4", ".ogg", ".opus", ".webm",
 
 
 def load_asr_core():
-    src = HERE / "asr_core.py"
+    src = SHARED / "asr_core.py"
     if hashlib.sha256(src.read_bytes()).hexdigest() != ASR_CORE_SHA256:
         sys.exit("asr_core.py is not the benchmark's copy")
     try:
         import torch  # noqa: F401  (vLLM installs it; asr_core imports it for its NeMo path)
     except ImportError:
         sys.modules["torch"] = types.ModuleType("torch")
-    sys.path.insert(0, str(HERE))
+    sys.path.insert(0, str(SHARED))
     import asr_core
 
     return asr_core

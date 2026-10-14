@@ -1,4 +1,31 @@
-# Fast local inference with vLLM
+# Voxtral Mini inference service
+
+[`ehzawad/Voxtral-Mini-3B-2507-bn-BD`](https://huggingface.co/ehzawad/Voxtral-Mini-3B-2507-bn-BD) at the benchmarked snapshot `d1c7aeb0cd18`, served with vLLM 0.31. The folder holds the Modal service behind the page (`modal_app.py`) and the same server and a batch tool for any CUDA GPU.
+
+## On Modal: `modal_app.py`
+
+Modal app `voxtral-mini-bn-inference`, at `https://<workspace>--voxtral-mini-bn-inference-serve.<region>.modal.run`. It runs `vllm serve` on one L4:
+- **Settings:** eager mode, `max_model_len` 2048, up to 32 concurrent pieces.
+- **Auth:** `/v1/*` is guarded by `VLLM_API_KEY`. `/health` is open and returns 200 only once the engine has fully loaded.
+- **Scaling:** it scales to zero 10 minutes after its last request, and `max_containers=1` caps spend at one L4.
+- **Speed (L4, from inside Modal):** 0.82 s for a 3 s piece and 2.34 s for a 16 s piece. A cold start takes about 1–3 minutes.
+  - Decoding is memory-bandwidth bound, and the L4 has about 300 GB/s.
+  - A fresh vLLM spends about 1.1 s more on its first request, so the frontend sends a warm-up piece before it unlocks the page.
+  - CUDA graphs (`FAST_BOOT = False`) gave 1.99 s per 16 s piece but took about 8 minutes on first boot, so the service stays eager.
+- **Billing:** Modal bills only while the container runs. L4 time costs $0.000222/s (about $0.80/h). The cached weights (about 9.4 GB, in a Volume) fall within the 1 TiB/month of free Volume storage.
+
+```bash
+# once: secrets (values never printed)
+modal secret create huggingface-voxtral --from-json hf.json        # {"HF_TOKEN": "..."}, read access to the private model
+modal secret create voxtral-bn-vllm-key --from-json key.json       # {"VLLM_API_KEY": "<random>"}, shared with the frontend
+
+modal run services/voxtral-mini/modal_app.py::download_weights     # once: Mistral-format files into a Volume
+modal deploy services/voxtral-mini/modal_app.py
+```
+
+The service follows the contract in the [top-level README](../../README.md#adding-a-model), so the frontend can call it like any other model.
+
+## On any CUDA GPU
 
 These tools run on any CUDA GPU with about 16 GB or more of memory. The bf16 weights take 9.4 GB; the rest is KV cache and activations. Install:
 
@@ -9,7 +36,9 @@ hf auth login                          # the model repo is private; or export HF
 
 `ffmpeg` on `PATH` lets the tools read M4A, WebM and other containers that libsndfile can't.
 
-## `transcribe.py`: batch transcription, fastest
+`client.py` and `transcribe.py` load the benchmark's chunker from `../../shared/asr_core.py`, so run them from a checkout of this repo.
+
+### `transcribe.py`: batch transcription, fastest
 
 ```bash
 python transcribe.py recordings/ --out transcripts.jsonl     # directories are searched recursively
@@ -25,7 +54,7 @@ python transcribe.py --list files.txt --out out.jsonl --eager
   - `hit_token_cap`, set when a piece ran to the 500-token cap (usually a repetition loop)
 - **Errors:** unreadable files get an `error` field, and the exit status is 1 if any failed.
 
-## `serve.sh` + `client.py`: an OpenAI-compatible server
+### `serve.sh` + `client.py`: an OpenAI-compatible server
 
 ```bash
 export VLLM_API_KEY="$(openssl rand -hex 24)"               # shared by the server and the client below
@@ -44,6 +73,7 @@ The server can also be called directly with any OpenAI-style client: `POST /v1/a
 FLEURS test, against the benchmark's earlier batched decode:
 - `transcribe.py` matched 875/920 transcripts, with WER 14.72% against the benchmark's 14.73%.
 - `client.py` against `serve.sh` matched 283 of the first 300 transcripts.
+- The Modal service, through the page's API on the L4, matched 853/920, with WER 14.69%.
 - The benchmark's own batch-1 run matched 860/920, with the same WER.
 
 Engine settings (CUDA graphs, batch composition, GPU type) change a few transcripts in both directions, but not the aggregate WER.

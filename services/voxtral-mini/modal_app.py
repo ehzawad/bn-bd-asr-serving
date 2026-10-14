@@ -1,8 +1,8 @@
 """Inference microservice: Voxtral Mini bn-BD behind vLLM's OpenAI-compatible
 server on one Modal L4 that scales to zero.
 
-    modal run modal_deployment/inference_app.py::download_weights   # once: weights -> Volume
-    modal deploy modal_deployment/inference_app.py
+    modal run services/voxtral-mini/modal_app.py::download_weights   # once: weights -> Volume
+    modal deploy services/voxtral-mini/modal_app.py
 
 It serves POST /v1/audio/transcriptions (guarded by VLLM_API_KEY) and GET /health
 (open; 200 only once the engine has loaded). The frontend app chunks audio the way
