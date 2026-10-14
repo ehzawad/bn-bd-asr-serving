@@ -1,24 +1,35 @@
 """The frontend's web app, free of Modal so it can be tested offline (test_frontend.py);
 frontend_app.py wraps it for Modal.
 
-Readiness. Nobody can record, upload or transcribe until vLLM's /health has answered
-200, which it only does once the engine has fully loaded:
-  - /api/status reads Modal's autoscaler stats and never sends a request to the GPU
-    container itself, so polling cannot keep the L4 awake. When a container exists but is
-    not yet confirmed (it is starting, or this frontend restarted), status starts a
-    bounded wake loop that asks /health until it answers;
-  - /api/status?probe=1 asks vLLM directly, but never wakes a sleeping service; the page
-    uses it right before recording or uploading, and while recording (which keeps the GPU
-    warm for that recording);
+Models. The page offers each model in MODELS; each is its own inference app on its own GPU,
+woken and tracked separately, and every endpoint takes ?model= (a form field for
+/api/transcribe). Only the model the page has selected is woken. Both inference apps answer
+the same two routes: /health (200 once the model is ready) and /v1/audio/transcriptions.
+
+Readiness. Nobody can record, upload or transcribe until the model's /health has answered
+200, which it only does once the model has fully loaded. When the page woke Voxtral, it also
+waits for one short warm-up transcription, because a fresh vLLM spends about a second more on
+its first request; the hybrid's server warms itself up before it answers /health.
+  - /api/status reads Modal's autoscaler stats and never wakes a sleeping model, so polling
+    cannot keep the GPU awake. Only when a container already exists but is not yet confirmed
+    (it is starting, or this frontend restarted) does status start a wake loop that asks
+    /health until it answers; that loop never sends a warm-up;
+  - a wake loop runs at most WAKE_DEADLINE_S, and stops early once nobody has asked about its
+    model for INTEREST_S (the page polls the selected model every 2 s while it wakes), so a
+    model the page switched away from, or a closed tab, does not keep a GPU busy;
+  - /api/status?probe=1 asks the model directly, but never wakes a sleeping service; the
+    page uses it right before recording or uploading, and while recording (which keeps the
+    GPU warm for that recording);
   - /api/transcribe decodes and checks the upload first (so a bad file never touches the
-    GPU), then asks vLLM directly right before sending any audio, and refuses with 503
+    GPU), then asks the model directly right before sending any audio, and refuses with 503
     (starting the wake) if it does not answer.
 
-Audio follows the benchmark's path unchanged: asr_core.load_audio (16 kHz mono),
-asr_core.chunks (<= 25 s pieces cut at pauses, no VAD), each piece staged as a PCM16 WAV
-and sent to vLLM's /v1/audio/transcriptions (greedy, language "bn", at most 500 new
-tokens), and the pieces' texts joined with single spaces. Uploads are bounded before they
-are parsed and before they are decoded, and nothing is stored.
+Audio follows the benchmark's path unchanged for both models: asr_core.load_audio (16 kHz
+mono), asr_core.chunks (<= 25 s pieces cut at pauses, no VAD), each piece staged as a PCM16
+WAV and sent to the model's /v1/audio/transcriptions, and the pieces' texts joined with single
+spaces. Voxtral Mini decodes in vLLM (greedy, language "bn", at most 500 new tokens); the hybrid
+FastConformer in NeMo (its RNN-T decoder, greedy, batch 1). Uploads are bounded before they are
+parsed and before they are decoded, and nothing is stored.
 """
 import asyncio
 import hashlib
@@ -34,11 +45,22 @@ from pathlib import Path
 import httpx
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
-SERVED_MODEL_NAME = "voxtral-mini-bn-bd"
+# One inference app per model; `app` is its Modal app, whose web function is named "serve".
+# warm_up: the frontend sends one warm-up piece after waking it (vLLM's first request is slow);
+# the hybrid's server decodes its own warm-up piece before it answers anything.
+MODELS = {
+    "voxtral": {"label": "Voxtral Mini 3B bn-BD", "short": "Voxtral Mini", "app": "voxtral-mini-bn-inference",
+                "served_model": "voxtral-mini-bn-bd", "engine": "vLLM", "gpu": "NVIDIA L4",
+                "cold_start": "about 1–3 minutes", "warm_up": True},
+    "hybrid": {"label": "FastConformer hybrid bn-BD", "short": "FastConformer hybrid",
+               "app": "fastconformer-hybrid-bn-inference", "served_model": "fastconformer-hybrid-bn-bd",
+               "engine": "NeMo, RNN-T", "gpu": "NVIDIA L4", "cold_start": "about 1 minute", "warm_up": False},
+}
+DEFAULT_MODEL = "voxtral"
 MAX_SECONDS = 10 * 60  # longest recording or upload accepted
 DURATION_GRACE_S = 5  # codec padding and timer slack on a recording stopped at the limit
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
@@ -47,6 +69,7 @@ DECODE_CONCURRENCY = 4
 INFERENCE_IDLE_MINUTES = 10  # the inference app's scaledown_window
 STATS_GRACE_S = 30  # autoscaler stats can lag a container that just answered; trust the answer this long
 WAKE_DEADLINE_S = 20 * 60
+INTEREST_S = 60  # a wake loop stops once nobody has asked about its model for this long
 NOT_READY = "The model is not ready yet. The page unlocks when it is."
 # Containers ffmpeg may open for us: audio and video formats only, never playlists or concat
 # lists, which could make it read other files.
@@ -67,6 +90,14 @@ def load_asr_core(path: Path):
     import asr_core
 
     return asr_core
+
+
+def warm_up_wav(seconds=2.0) -> bytes:
+    """A fixed, quiet noise piece (16 kHz PCM16 WAV) for the warm-up transcription."""
+    noise = np.random.default_rng(0).normal(0.0, 0.01, int(seconds * 16000)).astype(np.float32)
+    buf = io.BytesIO()
+    sf.write(buf, noise, 16000, subtype="PCM_16", format="WAV")
+    return buf.getvalue()
 
 
 class AudioRejected(Exception):
@@ -117,106 +148,174 @@ class UploadBodyLimit:
         return await self.app(scope, bounded_receive, send)
 
 
-def create_app(serve_fn, api_key: str, asr_core, static_dir: Path, *, transport=None,
+class Backend:
+    """One model's inference app, and its readiness as this frontend last saw it. serve_fn is the
+    app's web function: get_web_url() and get_current_stats() are all this uses (as their .aio
+    forms)."""
+
+    def __init__(self, serve_fn, client, *, wake_probe_timeout, wake_retry_s, wake_deadline_s, stats_grace_s,
+                 interest_s, warm_up=None):
+        self.serve_fn, self.client, self.warm_up = serve_fn, client, warm_up
+        self.interest_s, self.last_interest = interest_s, time.monotonic()
+        self.wake_probe_timeout, self.wake_retry_s = wake_probe_timeout, wake_retry_s
+        self.wake_deadline_s, self.stats_grace_s = wake_deadline_s, stats_grace_s
+        self.url = None
+        self.ready, self.ready_at = False, 0.0  # /health answered 200, as of ready_at (monotonic seconds)
+        self.wake, self.wake_started, self.wake_failed = None, None, False
+        self.want_warm = False  # an explicit wake asked for a warm-up once /health answers
+
+    async def base_url(self):
+        if self.url is None:
+            self.url = await self.serve_fn.get_web_url.aio()
+        return self.url
+
+    def mark_ready(self):
+        self.ready, self.ready_at, self.wake_failed = True, time.monotonic(), False
+
+    async def healthy(self, timeout):
+        try:
+            r = await self.client.get(f"{await self.base_url()}/health", timeout=timeout)
+            return r.status_code == 200
+        except httpx.HTTPError:
+            return False
+
+    async def probe(self, timeout=3.0):
+        """Ask the model directly. A container that is still starting does not answer in time."""
+        ok = await self.healthy(timeout)
+        if ok:
+            self.mark_ready()
+        else:
+            self.ready = False
+        return ok
+
+    def touch(self):
+        """Someone (the page polling, a wake, an upload) asked about this model just now."""
+        self.last_interest = time.monotonic()
+
+    async def wake_loop(self):
+        # Each /health request waits on the cold start; retry until the model answers, then warm it up.
+        deadline = time.monotonic() + self.wake_deadline_s
+        while time.monotonic() < deadline:
+            if await self.healthy(timeout=self.wake_probe_timeout):
+                warm, self.want_warm = self.want_warm, False
+                if warm and self.warm_up is not None:
+                    try:  # its text is discarded; a failure only loses the speed-up
+                        await self.warm_up(self)
+                    except Exception:
+                        pass
+                self.mark_ready()
+                return
+            self.ready = False
+            if time.monotonic() - self.last_interest > self.interest_s:
+                return  # nobody is waiting for this model any more; the next status or wake starts over
+            await asyncio.sleep(self.wake_retry_s)
+        self.wake_failed = True  # stop retrying on our own, so a broken container can scale down
+
+    def waking(self):
+        return self.wake is not None and not self.wake.done()
+
+    def start_wake(self, warm=False):
+        self.want_warm = self.want_warm or warm  # also reaches a loop that is already running
+        if not self.waking():
+            self.wake_started = time.monotonic()
+            self.wake = asyncio.create_task(self.wake_loop())
+
+    async def refresh(self, force_probe: bool):
+        stats = await self.serve_fn.get_current_stats.aio()
+        just_confirmed = self.ready and time.monotonic() - self.ready_at < self.stats_grace_s
+        if stats.num_total_runners == 0 and not just_confirmed:
+            self.ready = False  # scaled to zero since the last check
+        elif force_probe:  # never sent to a sleeping service, so it cannot wake one
+            await self.probe()
+        return stats
+
+    async def ensure_ready(self):
+        """Ask the model now; if it does not answer, start waking it and refuse."""
+        if not await self.probe():
+            self.start_wake()
+            raise HTTPException(503, NOT_READY)
+
+    async def wake_now(self):
+        await self.refresh(force_probe=False)  # clears a stale "ready" if the GPU scaled to zero
+        if not self.ready:
+            self.wake_failed = False  # an explicit wake retries even after a failed one
+            self.start_wake(warm=True)
+
+    async def state_now(self, check: bool):
+        stats = await self.refresh(force_probe=check)
+        exists = stats.num_total_runners > 0 or stats.backlog > 0
+        if exists and not self.ready and not self.waking() and not self.wake_failed:
+            self.start_wake()  # starting, or this frontend restarted: confirm it with a bounded loop
+        if self.ready:
+            state = "ready"
+        elif self.waking() or (exists and not self.wake_failed):
+            state = "waking"
+        elif self.wake_failed:
+            state = "error"
+        else:
+            state = "asleep"
+        waited = (round(time.monotonic() - self.wake_started)
+                  if state == "waking" and self.wake_started else None)
+        return state, waited
+
+
+def create_app(serve_fns: dict, api_key: str, asr_core, static_dir: Path, *, transport=None,
                wake_probe_timeout=170.0, wake_retry_s=2.0, wake_deadline_s=WAKE_DEADLINE_S,
-               stats_grace_s=STATS_GRACE_S, max_upload_bytes=MAX_UPLOAD_BYTES,
+               stats_grace_s=STATS_GRACE_S, interest_s=INTEREST_S, max_upload_bytes=MAX_UPLOAD_BYTES,
                max_decoded_samples=MAX_DECODED_SAMPLES):
-    """serve_fn is the inference app's web function: get_web_url() and get_current_stats()
-    are all this uses (as their .aio forms). transport lets tests stand in for vLLM."""
+    """serve_fns maps each MODELS key to its inference app's web function (see Backend).
+    transport lets tests stand in for the inference apps."""
     auth = {"Authorization": f"Bearer {api_key}"}
     # Modal answers a request still waiting after 150 s (e.g. on a cold start) with a 303 to
     # a result URL that blocks until the response is ready, so follow redirects.
     client = httpx.AsyncClient(timeout=httpx.Timeout(300, connect=30), follow_redirects=True,
                                limits=httpx.Limits(max_connections=64), transport=transport)
-    # ready: vLLM's /health answered 200, as of ready_at (monotonic seconds)
-    st = {"url": None, "ready": False, "ready_at": 0.0, "wake": None, "wake_started": None,
-          "wake_failed": False}
+    async def transcribe_piece(b: "Backend", served_model: str, wav: bytes, name="piece.wav") -> str:
+        r = await client.post(
+            f"{await b.base_url()}/v1/audio/transcriptions", headers=auth,
+            files={"file": (name, wav, "audio/wav")},
+            data={"model": served_model, "language": "bn", "temperature": "0",
+                  "max_completion_tokens": "500", "response_format": "json"})
+        r.raise_for_status()
+        return r.json()["text"].strip()
+
+    warm_wav = warm_up_wav()
+
+    def warm_up_for(served_model):
+        async def warm_up(b):
+            await transcribe_piece(b, served_model, warm_wav, name="warm-up.wav")
+        return warm_up
+
+    backends = {name: Backend(fn, client, wake_probe_timeout=wake_probe_timeout, wake_retry_s=wake_retry_s,
+                              wake_deadline_s=wake_deadline_s, stats_grace_s=stats_grace_s,
+                              interest_s=interest_s,
+                              warm_up=warm_up_for(MODELS[name]["served_model"]) if MODELS[name]["warm_up"] else None)
+                for name, fn in serve_fns.items() if name in MODELS}
     decode_slots = asyncio.Semaphore(DECODE_CONCURRENCY)
     api = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     api.add_middleware(UploadBodyLimit, limit=max_upload_bytes + 1024 * 1024)  # + multipart framing
 
-    async def base_url():
-        if st["url"] is None:
-            st["url"] = await serve_fn.get_web_url.aio()
-        return st["url"]
+    def backend(name: str) -> Backend:
+        if name not in backends:
+            raise HTTPException(400, "Unknown model.")
+        backends[name].touch()
+        return backends[name]
 
-    def mark_ready():
-        st["ready"], st["ready_at"], st["wake_failed"] = True, time.monotonic(), False
-
-    async def probe(timeout=3.0):
-        """Ask vLLM directly. A container that is still starting does not answer in time."""
-        try:
-            r = await client.get(f"{await base_url()}/health", timeout=timeout)
-            ok = r.status_code == 200
-        except httpx.HTTPError:
-            ok = False
-        if ok:
-            mark_ready()
-        else:
-            st["ready"] = False
-        return ok
-
-    async def wake_loop():
-        # Each /health request waits on the cold start; retry until the engine answers.
-        deadline = time.monotonic() + wake_deadline_s
-        while time.monotonic() < deadline:
-            if await probe(timeout=wake_probe_timeout):
-                return
-            await asyncio.sleep(wake_retry_s)
-        st["wake_failed"] = True  # stop retrying on our own, so a broken container can scale down
-
-    def waking():
-        return st["wake"] is not None and not st["wake"].done()
-
-    def start_wake():
-        if not waking():
-            st["wake_started"] = time.monotonic()
-            st["wake"] = asyncio.create_task(wake_loop())
-
-    async def refresh(force_probe: bool):
-        stats = await serve_fn.get_current_stats.aio()
-        just_confirmed = st["ready"] and time.monotonic() - st["ready_at"] < stats_grace_s
-        if stats.num_total_runners == 0 and not just_confirmed:
-            st["ready"] = False  # scaled to zero since the last check
-        elif force_probe:  # never sent to a sleeping service, so it cannot wake one
-            await probe()
-        return stats
-
-    async def ensure_ready():
-        """Ask vLLM now; if it does not answer, start waking it and refuse."""
-        if not await probe():
-            start_wake()
-            raise HTTPException(503, NOT_READY)
-
-    async def state_now(check: bool):
-        stats = await refresh(force_probe=check)
-        exists = stats.num_total_runners > 0 or stats.backlog > 0
-        if exists and not st["ready"] and not waking() and not st["wake_failed"]:
-            start_wake()  # starting, or this frontend restarted: confirm it with a bounded loop
-        if st["ready"]:
-            state = "ready"
-        elif waking() or (exists and not st["wake_failed"]):
-            state = "waking"
-        elif st["wake_failed"]:
-            state = "error"
-        else:
-            state = "asleep"
-        waited = (round(time.monotonic() - st["wake_started"])
-                  if state == "waking" and st["wake_started"] else None)
+    async def status_body(name: str, check: bool):
+        state, waited = await backend(name).state_now(check)
+        m = MODELS[name]
         return {"state": state, "waking_for_s": waited, "max_seconds": MAX_SECONDS,
-                "idle_minutes": INFERENCE_IDLE_MINUTES, "model": "Voxtral Mini 3B bn-BD", "gpu": "NVIDIA L4"}
+                "idle_minutes": INFERENCE_IDLE_MINUTES, "model": name, "label": m["label"],
+                "engine": m["engine"], "gpu": m["gpu"], "cold_start": m["cold_start"]}
 
     @api.get("/api/status")
-    async def status(check: bool = Query(False, alias="probe")):  # ?probe=1 asks vLLM directly
-        return await state_now(check)
+    async def status(model: str = Query(DEFAULT_MODEL), check: bool = Query(False, alias="probe")):
+        return await status_body(model, check)  # ?probe=1 asks the model directly
 
     @api.post("/api/wake")
-    async def wake():
-        await refresh(force_probe=False)  # clears a stale "ready" if the GPU scaled to zero
-        if not st["ready"]:
-            st["wake_failed"] = False  # an explicit wake retries even after a failed one
-            start_wake()
-        return await state_now(False)
+    async def wake(model: str = Query(DEFAULT_MODEL)):
+        await backend(model).wake_now()
+        return await status_body(model, False)
 
     def checked_load(source):
         """asr_core.load_audio, after bounding duration and decoded size from the header."""
@@ -273,17 +372,9 @@ def create_app(serve_fn, api_key: str, asr_core, static_dir: Path, *, transport=
         sf.write(buf, np.clip(piece, -1.0, 1.0), asr_core.TARGET_SR, subtype="PCM_16", format="WAV")
         return buf.getvalue()
 
-    async def transcribe_piece(wav: bytes) -> str:
-        r = await client.post(
-            f"{await base_url()}/v1/audio/transcriptions", headers=auth,
-            files={"file": ("piece.wav", wav, "audio/wav")},
-            data={"model": SERVED_MODEL_NAME, "language": "bn", "temperature": "0",
-                  "max_completion_tokens": "500", "response_format": "json"})
-        r.raise_for_status()
-        return r.json()["text"].strip()
-
     @api.post("/api/transcribe")
-    async def transcribe(file: UploadFile = File(...)):
+    async def transcribe(file: UploadFile = File(...), model: str = Form(DEFAULT_MODEL)):
+        b = backend(model)
         if file.size is not None and file.size > max_upload_bytes:
             raise HTTPException(413, "This upload is too large.")
         data = await file.read()
@@ -306,15 +397,16 @@ def create_app(serve_fn, api_key: str, asr_core, static_dir: Path, *, transport=
         pieces, forced = asr_core.chunks(audio)
         wavs = [staged(p) for p in pieces]
         del audio, pieces
-        await ensure_ready()  # only valid audio may wake the GPU, and only right before it is sent
+        await b.ensure_ready()  # only valid audio may wake the GPU, and only right before it is sent
         t1 = time.perf_counter()
+        served = MODELS[model]["served_model"]
         try:
-            texts = await gather_or_cancel(*(transcribe_piece(w) for w in wavs))
+            texts = await gather_or_cancel(*(transcribe_piece(b, served, w) for w in wavs))
         except httpx.HTTPError as e:
             raise HTTPException(502, f"The model service did not answer ({type(e).__name__}). "
                                      "Please try again in a moment.")
-        mark_ready()
-        return {"text": " ".join(t for t in texts if t), "pieces": texts,
+        b.mark_ready()
+        return {"text": " ".join(t for t in texts if t), "pieces": texts, "model": model,
                 "audio_seconds": round(seconds, 2), "forced_cuts": forced, "note": note,
                 "prep_seconds": round(t1 - t0, 2),
                 "model_seconds": round(time.perf_counter() - t1, 2)}

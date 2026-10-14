@@ -1,19 +1,20 @@
 """Frontend microservice: one page where people record or upload Bangla (Bangladesh)
-speech and read Voxtral Mini bn-BD's transcript. CPU only; it holds no model and calls
-the inference app over HTTP. The web app itself lives in frontend_core.py.
+speech, pick Voxtral Mini bn-BD or the FastConformer hybrid bn-BD, and read the transcript.
+CPU only; it holds no model and calls the inference apps over HTTP. The web app itself lives
+in frontend_core.py.
 
     modal deploy modal_deployment/frontend_app.py
 
-The page wakes the inference service when it loads and stays locked until vLLM reports
-the model ready; it stops polling after 10 idle minutes or while hidden, so both apps can
-scale to zero and nothing is billed while nobody uses it.
+The page wakes only the selected model's inference app when it loads (or when the model is
+switched) and stays locked until that model reports ready; it stops polling after 5 idle
+minutes or while hidden, so every app can scale to zero and nothing is billed while nobody
+uses it.
 """
 from pathlib import Path
 
 import modal
 
 APP_NAME = "voxtral-mini-bn-frontend"
-INFERENCE_APP = "voxtral-mini-bn-inference"
 MINUTES = 60
 
 HERE = Path(__file__).parent
@@ -38,7 +39,7 @@ app = modal.App(APP_NAME)
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name("voxtral-bn-vllm-key")],  # VLLM_API_KEY, shared with inference
+    secrets=[modal.Secret.from_name("voxtral-bn-vllm-key")],  # VLLM_API_KEY, shared with both inference apps
     scaledown_window=5 * MINUTES,  # idle time before this CPU container stops
     timeout=15 * MINUTES,
     max_containers=1,  # one process holds the wake state
@@ -51,7 +52,8 @@ def web():
     import frontend_core
 
     return frontend_core.create_app(
-        serve_fn=modal.Function.from_name(INFERENCE_APP, "serve"),
+        serve_fns={name: modal.Function.from_name(m["app"], "serve")
+                   for name, m in frontend_core.MODELS.items()},
         api_key=os.environ["VLLM_API_KEY"],
         asr_core=frontend_core.load_asr_core(Path("/root/asr_core.py")),
         static_dir=Path("/root/static"),
