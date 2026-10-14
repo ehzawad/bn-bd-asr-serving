@@ -32,12 +32,16 @@ Snapshot `d1c7aeb0cd18`, decoded at batch 1 on one A100 by the benchmark's own h
 | Kathbath known | 1,000 | 10.77% | 2.25% | Conformer Large (hishab) 9.33% | +1.44 [+0.77, +2.12] higher |
 | Kathbath unknown | 1,000 | 10.82% | 2.09% | Conformer Large (hishab) 8.79% | +2.03 [+1.37, +2.71] higher |
 | IndicVoices conv (validation) | 1,000 | 13.40% | 4.66% | ehzawad FastConformer-CTC 12.61% | +0.79 [-0.04, +1.56] inconclusive |
+| SUBAK.KO test (Bangladeshi) | 1,000 | 11.66% | 5.52% | Conformer Large (hishab) 13.64% | -1.99 [-2.74, -1.25] lower |
+| BanSpeech (Bangladeshi) | 1,000 | 20.72% | 7.69% | Whisper Medium 23.59% | -2.87 [-3.82, -1.94] lower |
+| Common Voice 17 test | 1,000 | 10.32% | 2.67% | Conformer Large (hishab) 7.35% | +2.97 [+2.24, +3.70] higher |
+| Ben-10 validation (Bangladeshi dialects) | 1,000 | 69.97% | 38.41% | Conformer Large (hishab) 63.54% | +6.44 [+2.18, +11.40] higher |
 
-All five models' results, per-set latency and the method are in [bengali-asr-benchmark](https://github.com/ehzawad/bengali-asr-benchmark).
+Conformer Large's card lists Kathbath, SUBAK.KO and Common Voice as training data, so those comparisons are not clean. On SUBAK.KO and BanSpeech, Voxtral Mini also has the lowest error rate of the author's other private bn-BD fine-tunes (Canary 1B v2, Qwen3-ASR 1.7B, FastConformer hybrid, Whisper turbo), though not separably from Canary and Qwen3-ASR. All nine models' results, per-set latency and the method are in [bengali-asr-benchmark](https://github.com/ehzawad/bengali-asr-benchmark).
 
-**Repetition loops.** On SPRING-INX R2, three recordings ran to the 500-token cap while repeating a word. They contribute 663 of that set's 8,143 word errors and stay in its score. `transcribe.py` flags such pieces (`hit_token_cap`); the HTTP paths don't report it yet.
+**Repetition loops.** On SPRING-INX R2, three recordings ran to the 500-token cap while repeating a word. They contribute 663 of that set's 8,143 word errors and stay in its score. On Ben-10's dialect speech, 18 recordings did the same (61.2% WER without them). `transcribe.py` flags such pieces (`hit_token_cap`); the HTTP paths don't report it yet.
 
-**These are Indian-source evaluation sets, not a bn-BD test.** The model card documents no training data, so overlap with any of them is not ruled out.
+**Seven of the eleven sets are Indian-source.** SUBAK.KO, BanSpeech and Ben-10 are Bangladeshi; Common Voice records no speaker region. The model card documents no training data, so overlap with any of these sets is not ruled out.
 
 ## Same outputs on every path (FLEURS test, 920 clips)
 
