@@ -7,9 +7,10 @@ Serving for the author's private Bangla (Bangladesh) speech-to-text fine-tunes, 
 | [`ehzawad/Voxtral-Mini-3B-2507-bn-BD`](https://huggingface.co/ehzawad/Voxtral-Mini-3B-2507-bn-BD), branch [`fp8`](https://huggingface.co/ehzawad/Voxtral-Mini-3B-2507-bn-BD/tree/fp8) | [vLLM](https://docs.vllm.ai) 0.31 | Voxtral Mini 3B, an audio LLM, with its text decoder in FP8 |
 
 **Live demo: <https://ehzawad-56775--voxtral-bn-asr.us-east.modal.run>.** Record or upload Bangla speech and read the transcript. It works on phones too.
-- **Cold start:** the GPU sleeps when idle, so the first visit wakes it, which takes about 4–5 minutes. The page stays locked until the model is ready.
+- **Cold start:** the GPU sleeps when idle, so the first visit wakes it, which takes about half a minute (24 s measured, warm-up included). The service is restored from a GPU memory snapshot instead of being loaded and compiled; the first 2–3 wakes after a deploy are full boots (~5–7 min) while Modal makes the snapshots. The page stays locked until the model has answered a warm-up transcription.
 - **Speed:** through the page, the model takes about 1.6–1.9 s for a 16 s clip on the L4. Upload time comes on top.
 - **Idle cost:** nothing runs, and nothing is billed, 10 minutes after the last use.
+- **Voice chat:** [`/chat`](https://ehzawad-56775--voxtral-bn-asr.us-east.modal.run/chat) on this page opens the Bangla voice chatbot (repo [bn-voice-chat](https://github.com/ehzawad/bn-voice-chat)): ask in Bangla by voice or text, and read and hear the answer.
 
 ## Layout
 
@@ -33,7 +34,7 @@ The services deploy and scale independently, talk over HTTPS with a shared API k
 Every inference service answers the same contract, so the frontend treats them all alike:
 - `GET /health` returns 200 only once the model is ready.
 - `POST /v1/audio/transcriptions` takes one piece of at most 25 s as a 16 kHz PCM16 WAV, with OpenAI's form fields, and answers `{"text": ...}`. It requires `Authorization: Bearer $VLLM_API_KEY`.
-- Its Modal web function is named `serve`.
+- Its Modal web endpoint is named `serve`: a web function, or the `serve` method of a class. A snapshotted service is a class, and its `MODELS` entry names it as `cls`.
 
 To add a model:
 1. Create `services/<model>/modal_app.py` and deploy it.
@@ -58,7 +59,7 @@ The measured accuracy below therefore carries over to these paths.
 Every path now loads the model's `fp8` branch (commit `287697acc3ab`) instead of the BF16 snapshot `d1c7aeb0cd18`. It is the same fine-tune with its text decoder in FP8:
 - **Format:** E4M3 weights with one scale per output channel, and activations quantized per token at run time. The audio encoder, the adapter, the embeddings and the output layer stay BF16.
 - **Size:** the checkpoint is 6.14 GB instead of 9.35 GB.
-- **Speed:** on the L4 with CUDA graphs, FP8 is 1.56× faster than BF16 per request (a 16 s piece takes 1.56 s instead of 2.43 s), and batches 1.44× faster. In eager mode it is about 12% *slower*, so the service now compiles with CUDA graphs, and a cold start takes about 4–5 minutes instead of 1–3. Details are in [`services/voxtral-mini/`](services/voxtral-mini/README.md).
+- **Speed:** on the L4 with CUDA graphs, FP8 is 1.56× faster than BF16 per request (a 16 s piece takes 1.56 s instead of 2.43 s), and batches 1.44× faster. In eager mode it is about 12% *slower*, so the service compiles with CUDA graphs. A full boot takes ~5 minutes, which is why every cold start restores a GPU-memory snapshot instead (about half a minute). Details are in [`services/voxtral-mini/`](services/voxtral-mini/README.md).
 - **Hardware:** FP8 kernels need Ada, Hopper or Blackwell. The L4 is Ada.
 - **Accuracy:** the model card compares it with BF16 on the benchmark's eleven sets, as a paired per-utterance WER difference on the same clips. The one-sided 95% upper bound stays below +0.5 WER points on ten sets, and FLEURS moves from 14.70% to 14.64%. Ben-10 is inconclusive (68.38% → 67.33%) because repetition loops widen its interval.
 

@@ -15,6 +15,7 @@ from pathlib import Path
 import modal
 
 APP_NAME = "voxtral-mini-bn-frontend"  # kept from the first deployment, with the page's URL label
+VOICE_CHAT_APP = "bn-chat"  # the Bangla voice chatbot (repo bn-voice-chat); /chat here forwards to it
 MINUTES = 60
 
 HERE = Path(__file__).parent
@@ -54,9 +55,19 @@ def web():
 
     import frontend_core
 
+    def serve_fn(m):
+        # A snapshotted service is a class whose web endpoint is its `serve` method.
+        if m.get("cls"):
+            return modal.Cls.from_name(m["app"], m["cls"])().serve
+        return modal.Function.from_name(m["app"], "serve")
+
+    async def voice_chat_url():
+        url = await modal.Function.from_name(VOICE_CHAT_APP, "web").get_web_url.aio()
+        return url.rstrip("/") + "/chat"
+
     return frontend_core.create_app(
-        serve_fns={name: modal.Function.from_name(m["app"], "serve")
-                   for name, m in frontend_core.MODELS.items()},
+        serve_fns={name: serve_fn(m) for name, m in frontend_core.MODELS.items()},
+        voice_chat_url=voice_chat_url,
         api_key=os.environ["VLLM_API_KEY"],
         asr_core=frontend_core.load_asr_core(Path("/root/asr_core.py")),
         static_dir=Path("/root/static"),

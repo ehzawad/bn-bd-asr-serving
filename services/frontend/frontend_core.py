@@ -8,7 +8,8 @@ inference service answers the same contract, so this app treats them alike:
   - GET /health: 200 only once the model is ready;
   - POST /v1/audio/transcriptions (Authorization: Bearer VLLM_API_KEY): one <= 25 s piece as a
     16 kHz PCM16 WAV, with the OpenAI form fields sent by transcribe_piece, answering {"text"};
-  - its Modal web function is named "serve".
+  - its Modal web endpoint is named "serve" (a web function, or the `serve` method of the class named by
+    the model's "cls", for a snapshotted service).
 
 Readiness. Nobody can record, upload or transcribe until the model's /health has answered
 200, which it only does once the model has fully loaded. For a model with warm_up set
@@ -50,16 +51,18 @@ import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
-# One inference service per model; `app` is its Modal app, whose web function is named "serve".
+# One inference service per model; `app` is its Modal app, whose web endpoint is named "serve" (a method of
+# class `cls` when the service is a snapshotted class).
 # To offer another model, deploy its service and add it here and to MODELS in static/index.html.
 # warm_up: after an explicit wake the frontend sends one warm-up piece (vLLM's first request is
 # slow); a service that warms itself up before it answers /health sets False.
 MODELS = {
     "voxtral": {"label": "Voxtral Mini 3B bn-BD (FP8)", "short": "Voxtral Mini", "app": "voxtral-mini-bn-inference",
+                "cls": "Voxtral",  # snapshotted class; its web endpoint is the `serve` method
                 "served_model": "voxtral-mini-bn-bd", "engine": "vLLM", "gpu": "NVIDIA L4",
-                "cold_start": "about 4–5 minutes", "warm_up": True},
+                "cold_start": "about half a minute", "warm_up": True},
 }
 DEFAULT_MODEL = "voxtral"
 MAX_SECONDS = 10 * 60  # longest recording or upload accepted
@@ -265,7 +268,7 @@ class Backend:
 def create_app(serve_fns: dict, api_key: str, asr_core, static_dir: Path, *, transport=None,
                wake_probe_timeout=170.0, wake_retry_s=2.0, wake_deadline_s=WAKE_DEADLINE_S,
                stats_grace_s=STATS_GRACE_S, interest_s=INTEREST_S, max_upload_bytes=MAX_UPLOAD_BYTES,
-               max_decoded_samples=MAX_DECODED_SAMPLES):
+               max_decoded_samples=MAX_DECODED_SAMPLES, voice_chat_url=None):
     """serve_fns maps each MODELS key to its inference app's web function (see Backend).
     transport lets tests stand in for the inference apps."""
     auth = {"Authorization": f"Bearer {api_key}"}
@@ -417,5 +420,21 @@ def create_app(serve_fns: dict, api_key: str, asr_core, static_dir: Path, *, tra
     @api.get("/")
     async def index():
         return FileResponse(Path(static_dir) / "index.html", headers={"Cache-Control": "no-cache"})
+
+    voice_chat = {}
+
+    @api.get("/chat")
+    async def chat():
+        """The Bangla voice chatbot (a separate app, bn-voice-chat): /chat on this page forwards there.
+        voice_chat_url is a URL or a callable returning one, resolved once."""
+        if voice_chat_url is None:
+            raise HTTPException(404, "Not found.")
+        if "url" not in voice_chat:
+            try:
+                url = voice_chat_url() if callable(voice_chat_url) else voice_chat_url
+                voice_chat["url"] = await url if asyncio.iscoroutine(url) else url
+            except Exception:
+                raise HTTPException(503, "The voice chat is not reachable right now.")
+        return RedirectResponse(voice_chat["url"], status_code=307)
 
     return api

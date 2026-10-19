@@ -280,6 +280,17 @@ async def main():
     check("a failed piece returns 502 and cancels its siblings", r.status_code == 502 and fake.inflight == 0)
     fake.piece_delay = 0.0
 
+    # /chat forwards to the voice chatbot, and the page links to it.
+    r = await c.get("/chat")
+    check("/chat is 404 when no voice chat is configured", r.status_code == 404)
+    chat_app = frontend_core.create_app(serve_fns, "test-key", asr_core, HERE / "static",
+                                        voice_chat_url=lambda: "https://chat.example/chat", **opts)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=chat_app), base_url="http://frontend.test") as c4:
+        r = await c4.get("/chat")
+        check("/chat redirects to the voice chatbot",
+              r.status_code == 307 and r.headers["location"] == "https://chat.example/chat")
+        check("the page links to /chat", 'href="/chat"' in (await c4.get("/")).text)
+
     await c.aclose()
     print(f"{len(failures)} failed" if failures else "all passed")
     return 1 if failures else 0

@@ -6,9 +6,11 @@
 
 Modal app `voxtral-mini-bn-inference`, at `https://<workspace>--voxtral-mini-bn-inference-serve.<region>.modal.run`. It runs `vllm serve` on one L4:
 - **Settings:** torch.compile with CUDA graphs (`FAST_BOOT = False`), `max_model_len` 2048, up to 32 concurrent pieces.
+- **Cold start from a GPU memory snapshot.** The class `Voxtral` boots once: vLLM loads, compiles, captures CUDA graphs and answers two warm-up pieces. vLLM then goes to sleep level 1, which moves the weights to CPU RAM and releases the KV cache, and Modal snapshots CPU and GPU memory. Every later cold start restores that snapshot and wakes vLLM in ~1.3 s. A full boot takes ~5 min, and the first 2–3 wakes after each deploy are full boots while Modal makes the snapshots.
+- **nginx in front.** vLLM listens on localhost. nginx on port 8000 passes only `/v1/*` and `/health`, because the snapshot needs vLLM's dev-mode `/sleep` and `/wake_up` routes, which the API key does not guard.
 - **Auth:** `/v1/*` is guarded by `VLLM_API_KEY`. `/health` is open and returns 200 only once the engine has fully loaded.
 - **Scaling:** it scales to zero 10 minutes after its last request, and `max_containers=1` caps spend at one L4.
-- **Speed (L4, from inside Modal, 2026-10-19):** about 0.5 s for a 5 s piece and 1.3–1.6 s for a 16 s piece. A cold start takes about 4–5 minutes.
+- **Speed (L4, from inside Modal, 2026-10-19):** about 0.5 s for a 5 s piece and 1.3–1.6 s for a 16 s piece. A cold start takes about half a minute (snapshot restore).
   - FP8 against BF16, same L4, same clips, median of 6 requests each (16 s / 7 s / 5 s pieces):
 
     | Mode | BF16 | FP8 | FP8 speedup |

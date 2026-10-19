@@ -33,6 +33,9 @@
   h1 .bn { font-family: "Noto Sans Bengali", sans-serif; font-weight: 600; }
   h1 .en::before { content: "· "; color: var(--muted); }
   .sub { color: var(--muted); margin: 0 0 20px; font-size: .95rem; }
+  .chatlink { display: block; margin: -8px 0 20px; padding: 10px 14px; border-radius: 12px; text-decoration: none;
+              background: var(--accent-soft); color: var(--ink); border: 1px solid var(--accent); font-size: .92rem; }
+  .chatlink span { color: var(--accent); font-weight: 600; white-space: nowrap; }
   .models { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 0 0 14px; }
   .models[hidden] { display: none; }
   .models button { display: flex; flex-direction: column; gap: 2px; text-align: left; font: inherit; cursor: pointer;
@@ -108,6 +111,7 @@
 <main>
   <h1><span class="bn">বাংলা কথা থেকে লেখা</span> <span class="en">Bangla speech to text</span></h1>
   <p class="sub" id="sub">Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · FP8, served with vLLM on an NVIDIA L4</p>
+  <a class="chatlink" href="/chat">🎙️ নতুন: <b>বাংলা ভয়েস চ্যাট</b>: বাংলায় প্রশ্ন করুন, উত্তর পড়ুন ও শুনুন <span>/chat →</span></a>
 
   <div class="models" id="models" role="radiogroup" aria-label="Model" hidden></div>
 
@@ -167,7 +171,7 @@ let cfg = { max_seconds: 600, idle_minutes: 10 };
 // frontend_core.py, and the picker shows once there are two or more. The choice is kept in the
 // URL (?model=) and, where storage works, for the next visit.
 const MODELS = {
-  voxtral: { name: "Voxtral Mini 3B", kind: "Audio LLM · vLLM", short: "Voxtral Mini", cold: "about 4–5 minutes",
+  voxtral: { name: "Voxtral Mini 3B", kind: "Audio LLM · vLLM", short: "Voxtral Mini", cold: "about half a minute",
              sub: "Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · FP8, served with vLLM on an NVIDIA L4" },
 };
 const hasModel = (m) => Object.prototype.hasOwnProperty.call(MODELS, m ?? "");
