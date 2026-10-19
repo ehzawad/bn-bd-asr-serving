@@ -71,6 +71,7 @@
   .recbtn.on .stop { display: block; }
   .recbtn:disabled, .btn:disabled { opacity: .45; cursor: not-allowed; }
   .timer { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .timer.live { color: var(--rec); font-weight: 600; }
   .meter { width: 180px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
   .meter i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .08s; }
   .drop { border: 2px dashed var(--line); border-radius: 14px; padding: 28px 16px; text-align: center; color: var(--muted); }
@@ -353,23 +354,22 @@ async function startRecording() {
     closeMeter();
     return showError("This browser cannot record here. Use Upload instead, or open the page in Safari or Chrome.");
   }
-  // Ask for the microphone synchronously inside the tap (Safari can refuse media access after
-  // an await), and confirm with vLLM in parallel; release the mic if the model is not ready.
+  // People start talking the moment they tap, so capture starts the moment the microphone opens.
+  // Ask for the microphone synchronously inside the tap (Safari can refuse media access after an
+  // await). The readiness check with vLLM runs alongside the recording instead of before it: two
+  // round trips to the GPU's region used to cost the first second or more of speech. If the
+  // model turns out not to be ready, the recording is discarded (the page only unlocks when
+  // it is ready, so this is rare).
   const mic = navigator.mediaDevices.getUserMedia({ audio: {
     channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-  mic.catch(() => {});
-  if (!(await confirmReady())) {
-    mic.then((s) => s.getTracks().forEach((t) => t.stop())).catch(() => {});
-    return closeMeter();
-  }
   try {
     stream = await mic;
   } catch (e) {
     closeMeter();
     return showError(e.name === "NotAllowedError" ? "Microphone permission was denied. Allow it in the browser settings and try again." : `No microphone available (${e.name}).`);
   }
-  // The permission prompt can stay open for a while: check the page and the model again.
-  if (paused || busy || document.hidden || !(await confirmReady())) {
+  // The permission prompt can stay open for a while: check the page again (no network needed).
+  if (paused || busy || document.hidden) {
     stream.getTracks().forEach((t) => t.stop());
     return closeMeter();
   }
@@ -382,22 +382,31 @@ async function startRecording() {
     return showError(`Recording is not supported in this browser (${e.name}). Use Upload instead.`);
   }
   const parts = [];
+  let discard = false;
   rec.ondataavailable = (e) => e.data.size && parts.push(e.data);
   rec.onstop = () => {
     stream.getTracks().forEach((t) => t.stop());
     cancelAnimationFrame(raf); if (actx) { actx.close(); actx = null; } $("level").style.width = "0";
     clearInterval(recT);
     $("recbtn").classList.remove("on"); $("recbtn").setAttribute("aria-label", "Start recording");
+    $("timer").textContent = "00:00"; $("timer").classList.remove("live");
     finishing = false;  // send() takes the lock over (busy) without yielding
+    if (discard) return render(document.body.dataset.state);
     send(new Blob(parts, { type: rec.mimeType || mime }), `recording.${ext}`);
   };
   rec.start(1000);
   t0 = Date.now();
   render(document.body.dataset.state);
   $("recbtn").classList.add("on"); $("recbtn").setAttribute("aria-label", "Stop recording");
+  $("timer").textContent = "● Recording · speak now"; $("timer").classList.add("live");
+  if (navigator.vibrate) navigator.vibrate(30);  // a felt cue on Android that capture is live
+  // The readiness check, in parallel with the recording (see above).
+  confirmReady().then((ok) => {
+    if (!ok && recording()) { discard = true; finishing = true; rec.stop(); }
+  });
   recT = setInterval(() => {
     const s = (Date.now() - t0) / 1000;
-    $("timer").textContent = `${fmt(s)} / ${fmt(cfg.max_seconds)}`;
+    $("timer").textContent = `● Recording · ${fmt(s)} / ${fmt(cfg.max_seconds)}`;
     if (s >= cfg.max_seconds - 1 && recording()) stopRec();
   }, 250);
   if (actx) {  // level meter only; recording does not depend on it
