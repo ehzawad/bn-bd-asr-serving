@@ -18,7 +18,7 @@
 ## Readiness: nothing is accepted until the selected model is ready
 
 1. **On load:** opening the page wakes the selected model's inference service, and only that one. Switching models wakes the newly selected one. The picker is locked while recording or transcribing.
-2. **While waking:** Record and Upload stay locked behind a "waking the model" notice. A Voxtral cold start takes about 1–3 minutes.
+2. **While waking:** Record and Upload stay locked behind a "waking the model" notice. A Voxtral cold start takes about 4–5 minutes.
 3. **Unlocking:** the controls unlock only after the model's `/health` has answered 200. For a model with `warm_up` set, such as Voxtral, the page also waits for one short warm-up transcription, because a fresh vLLM spends about 1.1 s more on its first request.
 4. **Before each use:** right before recording or uploading, the page asks the model directly (`/api/status?model=…&probe=1`).
 5. **On the server:** `/api/transcribe` decodes and checks the upload first, so a bad file never touches the GPU. It then asks the model again right before sending any audio, and refuses with 503 (starting the wake) if the model does not answer.

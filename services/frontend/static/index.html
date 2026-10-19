@@ -85,6 +85,7 @@
   .text.placeholder { color: var(--muted); font-family: inherit; font-size: 1rem; }
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
   .meta { color: var(--muted); font-size: .88rem; flex: 1; }
+  .meta b { font-weight: 600; }
   audio { width: 100%; margin-bottom: 14px; }
   .error { background: var(--err-soft); color: var(--err); border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
   .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent;
@@ -106,7 +107,7 @@
 <body data-state="waking">
 <main>
   <h1><span class="bn">বাংলা কথা থেকে লেখা</span> <span class="en">Bangla speech to text</span></h1>
-  <p class="sub" id="sub">Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · served with vLLM on an NVIDIA L4</p>
+  <p class="sub" id="sub">Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · FP8, served with vLLM on an NVIDIA L4</p>
 
   <div class="models" id="models" role="radiogroup" aria-label="Model" hidden></div>
 
@@ -166,8 +167,8 @@ let cfg = { max_seconds: 600, idle_minutes: 10 };
 // frontend_core.py, and the picker shows once there are two or more. The choice is kept in the
 // URL (?model=) and, where storage works, for the next visit.
 const MODELS = {
-  voxtral: { name: "Voxtral Mini 3B", kind: "Audio LLM · vLLM", short: "Voxtral Mini", cold: "about 1–3 minutes",
-             sub: "Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · served with vLLM on an NVIDIA L4" },
+  voxtral: { name: "Voxtral Mini 3B", kind: "Audio LLM · vLLM", short: "Voxtral Mini", cold: "about 4–5 minutes",
+             sub: "Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · FP8, served with vLLM on an NVIDIA L4" },
 };
 const hasModel = (m) => Object.prototype.hasOwnProperty.call(MODELS, m ?? "");
 let model = (() => {
@@ -456,9 +457,12 @@ async function send(blob, name) {
     if (!r.ok) throw new Error(j.detail || `Request failed (${r.status}).`);
     $("text").className = "text"; $("text").textContent = j.text || "(no speech recognised)";
     $("copy").hidden = !j.text;
-    const n = j.pieces.length;
-    $("meta").textContent = `${MODELS[m].short} · ${j.audio_seconds.toFixed(1)} s of audio · ` +
-      `${n} piece${n > 1 ? "s" : ""} · transcribed in ${j.model_seconds.toFixed(1)} s`;
+    // Audio length as a clock (mm:ss) so it never reads as a processing time; the total is what the
+    // user waited, upload included.
+    const n = j.pieces.length, total = (Date.now() - started) / 1000;
+    $("meta").innerHTML = `${MODELS[m].short} · <b>Audio length</b> ${fmt(Math.max(1, Math.round(j.audio_seconds)))}` +
+      (n > 1 ? ` (${n} pieces)` : "") +
+      ` · <b>Transcription time</b> ${j.model_seconds.toFixed(1)} s on the GPU, ${total.toFixed(1)} s in total`;
   } catch (e) {
     $("text").className = "text placeholder"; $("text").textContent = "Your transcript will appear here.";
     showError(e.name === "AbortError" ? "The transcription took too long. Please try again." : e.message);

@@ -1,5 +1,5 @@
-"""Inference microservice: Voxtral Mini bn-BD behind vLLM's OpenAI-compatible
-server on one Modal L4 that scales to zero.
+"""Inference microservice: Voxtral Mini bn-BD (FP8 decoder) behind vLLM's
+OpenAI-compatible server on one Modal L4 that scales to zero.
 
     modal run services/voxtral-mini/modal_app.py::download_weights   # once: weights -> Volume
     modal deploy services/voxtral-mini/modal_app.py
@@ -17,15 +17,21 @@ import modal
 
 APP_NAME = "voxtral-mini-bn-inference"
 MODEL_REPO = "ehzawad/Voxtral-Mini-3B-2507-bn-BD"
-MODEL_REVISION = "d1c7aeb0cd18f8a7a057bf756df5ee2ccb7aebcd"  # the benchmarked snapshot
+# Branch fp8: the text decoder in FP8 (E4M3 weights, one scale per output channel; activations
+# quantized per token at run time), the audio encoder BF16. 6.1 GB instead of 9.3 GB; the L4
+# (Ada) runs it on native FP8 kernels. The model card lists its WER next to main (BF16) on the
+# benchmark's eleven sets.
+MODEL_REVISION = "287697acc3abeda13de40ecae073e07b67947b9c"  # branch fp8
 SERVED_MODEL_NAME = "voxtral-mini-bn-bd"
 VLLM_PORT = 8000
 MINUTES = 60
 
-# Eager mode skips torch.compile and CUDA-graph capture, for a shorter cold start.
-# False gives faster decoding after a slower boot (compile artifacts are cached in
-# the vllm-cache Volume). Both modes give the same FLEURS WER in the benchmark.
-FAST_BOOT = True
+# True (eager) skips torch.compile and CUDA-graph capture, for a shorter cold start, but
+# FP8 then decodes ~12% slower than BF16 on the L4: its per-token activation quantization
+# only fuses into the matmuls when compiled. Compiled with CUDA graphs, FP8 is 1.56x faster
+# than BF16 (16 s piece: 1.56 s vs 2.43 s). Compile artifacts are cached in the vllm-cache
+# Volume, so only the first boot pays the full compile.
+FAST_BOOT = False
 
 image = (
     modal.Image.from_registry("nvidia/cuda:13.0.3-devel-ubuntu24.04", add_python="3.12")
