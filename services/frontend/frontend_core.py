@@ -32,7 +32,7 @@ vLLM spends about a second more on its first request.
 Audio follows the benchmark's path unchanged for every model: asr_core.load_audio (16 kHz
 mono), asr_core.chunks (<= 25 s pieces cut at pauses, no VAD), each piece staged as a PCM16
 WAV and sent to the model's /v1/audio/transcriptions, and the pieces' texts joined with single
-spaces. Voxtral Mini (FP8 decoder) decodes in vLLM (greedy, language "bn", at most 500 new tokens). Uploads are
+spaces. Voxtral Mini (BF16) decodes in vLLM (greedy, language "bn", at most 500 new tokens). Uploads are
 bounded before they are parsed and before they are decoded, and nothing is stored.
 """
 import asyncio
@@ -59,7 +59,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 # warm_up: after an explicit wake the frontend sends one warm-up piece (vLLM's first request is
 # slow); a service that warms itself up before it answers /health sets False.
 MODELS = {
-    "voxtral": {"label": "Voxtral Mini 3B bn-BD (FP8)", "short": "Voxtral Mini", "app": "voxtral-mini-bn-inference",
+    "voxtral": {"label": "Voxtral Mini 3B bn-BD (BF16)", "short": "Voxtral Mini", "app": "voxtral-mini-bn-inference",
                 "cls": "Voxtral",  # snapshotted class; its web endpoint is the `serve` method
                 "served_model": "voxtral-mini-bn-bd", "engine": "vLLM", "gpu": "NVIDIA L4",
                 "cold_start": "about half a minute", "warm_up": True},

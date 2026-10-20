@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vLLM's OpenAI-compatible server for Voxtral Mini bn-BD (FP8 decoder) on a local GPU, with the same
+# vLLM's OpenAI-compatible server for Voxtral Mini bn-BD on a local GPU, with the same
 # settings as the Modal inference service. Send it <= 25 s pieces (client.py does the
 # chunking): Voxtral's transcription endpoint does not split long audio itself.
 #
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 MODEL=${MODEL:-ehzawad/Voxtral-Mini-3B-2507-bn-BD}
-REVISION=${REVISION:-287697acc3abeda13de40ecae073e07b67947b9c}  # branch fp8; FP8 kernels on Ada, Hopper, Blackwell
+REVISION=${REVISION:-d1c7aeb0cd18f8a7a057bf756df5ee2ccb7aebcd}  # the benchmarked snapshot
 args=(
   --served-model-name voxtral-mini-bn-bd
   --tokenizer-mode mistral --config-format mistral --load-format mistral

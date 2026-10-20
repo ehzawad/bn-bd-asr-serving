@@ -1,27 +1,19 @@
-# Voxtral Mini inference service (FP8)
+# Voxtral Mini inference service
 
-[`ehzawad/Voxtral-Mini-3B-2507-bn-BD`](https://huggingface.co/ehzawad/Voxtral-Mini-3B-2507-bn-BD) at its [`fp8`](https://huggingface.co/ehzawad/Voxtral-Mini-3B-2507-bn-BD/tree/fp8) branch (commit `287697acc3ab`), served with vLLM 0.31. The text decoder is FP8: E4M3 weights with one scale per output channel, and activations quantized per token at run time. The audio encoder stays BF16. Its WER is within 0.5 points of the BF16 snapshot `d1c7aeb0cd18` on ten of the benchmark's eleven sets (see the model card). Set `MODEL_REVISION` (or `REVISION` / `--revision`) to `d1c7aeb0cd18f8a7a057bf756df5ee2ccb7aebcd` to serve BF16 again. The folder holds the Modal service behind the page (`modal_app.py`) and the same server and a batch tool for any CUDA GPU.
+[`ehzawad/Voxtral-Mini-3B-2507-bn-BD`](https://huggingface.co/ehzawad/Voxtral-Mini-3B-2507-bn-BD) at the benchmarked BF16 snapshot `d1c7aeb0cd18`, served with vLLM 0.31. The folder holds the Modal service behind the page (`modal_app.py`) and the same server and a batch tool for any CUDA GPU.
 
 ## On Modal: `modal_app.py`
 
 Modal app `voxtral-mini-bn-inference`, at `https://<workspace>--voxtral-mini-bn-inference-serve.<region>.modal.run`. It runs `vllm serve` on one L4:
-- **Settings:** torch.compile with CUDA graphs (`FAST_BOOT = False`), `max_model_len` 2048, up to 32 concurrent pieces.
+- **Settings:** BF16, torch.compile with CUDA graphs (`FAST_BOOT = False`), `max_model_len` 2048, up to 32 concurrent pieces.
 - **Cold start from a GPU memory snapshot.** The class `Voxtral` boots once: vLLM loads, compiles, captures CUDA graphs and answers two warm-up pieces. vLLM then goes to sleep level 1, which moves the weights to CPU RAM and releases the KV cache, and Modal snapshots CPU and GPU memory. Every later cold start restores that snapshot and wakes vLLM in ~1.3 s. A full boot takes ~5 min, and the first 2–3 wakes after each deploy are full boots while Modal makes the snapshots.
 - **nginx in front.** vLLM listens on localhost. nginx on port 8000 passes only `/v1/*` and `/health`, because the snapshot needs vLLM's dev-mode `/sleep` and `/wake_up` routes, which the API key does not guard.
 - **Auth:** `/v1/*` is guarded by `VLLM_API_KEY`. `/health` is open and returns 200 only once the engine has fully loaded.
 - **Scaling:** it scales to zero 10 minutes after its last request, and `max_containers=1` caps spend at one L4.
-- **Speed (L4, from inside Modal, 2026-10-19):** about 0.5 s for a 5 s piece and 1.3–1.6 s for a 16 s piece. A cold start takes about half a minute (snapshot restore).
-  - FP8 against BF16, same L4, same clips, median of 6 requests each (16 s / 7 s / 5 s pieces):
-
-    | Mode | BF16 | FP8 | FP8 speedup |
-    |---|---|---|---|
-    | CUDA graphs (served) | 2.43 / 1.12 / 0.80 s | 1.56 / 0.72 / 0.51 s | 1.56× |
-    | Eager (`FAST_BOOT = True`) | 2.49 / 1.08 / 0.75 s | 2.78 / 1.28 / 0.82 s | 0.88× (slower) |
-
-    16 concurrent 16 s pieces took 2.20 s with FP8 and 3.17 s with BF16, both with CUDA graphs. With CUDA graphs, all five FP8 transcripts matched BF16 exactly.
-  - Eager mode is the only case where FP8 is slower: the per-token activation quantization fuses into the FP8 matmuls only when compiled. So the service compiles, even though boot takes longer. Most of the boot is a ~2 minute stretch before CUDA-graph capture. The torch.compile artifacts are cached in the `voxtral-bn-vllm-cache` Volume, and loading them takes about 35 s.
+- **Speed (L4, from inside Modal, CUDA graphs):** 0.80 s for a 5 s piece, 1.12 s for a 7 s piece and about 2.0–2.4 s for a 16 s piece. 16 concurrent 16 s pieces take 3.2 s. A cold start takes about half a minute (snapshot restore).
+  - The torch.compile artifacts are cached in the `voxtral-bn-vllm-cache` Volume, so a full boot after a deploy recompiles little.
   - A fresh vLLM spends about 1.1 s more on its first request, so the frontend sends a warm-up piece before it unlocks the page.
-- **Billing:** Modal bills only while the container runs. L4 time costs $0.000222/s (about $0.80/h). The cached weights (about 6.2 GB, in a Volume) fall within the 1 TiB/month of free Volume storage.
+- **Billing:** Modal bills only while the container runs. L4 time costs $0.000222/s (about $0.80/h). The cached weights (about 9.4 GB, in a Volume) fall within the 1 TiB/month of free Volume storage.
 
 ```bash
 # once: secrets (values never printed)
@@ -36,7 +28,7 @@ The service follows the contract in the [top-level README](../../README.md#addin
 
 ## On any CUDA GPU
 
-These tools run on any CUDA GPU with about 12 GB or more of memory. The FP8 weights take 6.1 GB; the rest is KV cache and activations. FP8 kernels need Ada, Hopper or Blackwell (L4, RTX 40xx, H100 and newer). On an older GPU such as an A100, vLLM falls back to weight-only FP8, which is untested here; to run BF16 there instead, pass the BF16 revision above (9.4 GB). Install:
+These tools run on any CUDA GPU with about 16 GB or more of memory. The BF16 weights take 9.4 GB; the rest is KV cache and activations. Install:
 
 ```bash
 pip install -r requirements.txt        # vllm[audio] 0.31.0 (torch 2.13, CUDA 13.0), mistral-common, librosa, soundfile, httpx

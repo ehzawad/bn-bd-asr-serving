@@ -111,7 +111,7 @@
 <body data-state="waking">
 <main>
   <h1><span class="bn">বাংলা কথা থেকে লেখা</span> <span class="en">Bangla speech to text</span></h1>
-  <p class="sub" id="sub">Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · FP8, served with vLLM on an NVIDIA L4</p>
+  <p class="sub" id="sub">Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · BF16, served with vLLM on an NVIDIA L4</p>
   <a class="chatlink" href="/chat">🎙️ নতুন: <b>বাংলা ভয়েস চ্যাট</b>: বাংলায় প্রশ্ন করুন, উত্তর পড়ুন ও শুনুন <span>/chat →</span></a>
 
   <div class="models" id="models" role="radiogroup" aria-label="Model" hidden></div>
@@ -173,7 +173,7 @@ let cfg = { max_seconds: 600, idle_minutes: 10 };
 // URL (?model=) and, where storage works, for the next visit.
 const MODELS = {
   voxtral: { name: "Voxtral Mini 3B", kind: "Audio LLM · vLLM", short: "Voxtral Mini", cold: "about half a minute",
-             sub: "Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · FP8, served with vLLM on an NVIDIA L4" },
+             sub: "Voxtral Mini 3B, fine-tuned for Bangla (Bangladesh) · BF16, served with vLLM on an NVIDIA L4" },
 };
 const hasModel = (m) => Object.prototype.hasOwnProperty.call(MODELS, m ?? "");
 let model = (() => {

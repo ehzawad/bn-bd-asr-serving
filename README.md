@@ -4,11 +4,11 @@ Serving for the author's private Bangla (Bangladesh) speech-to-text fine-tunes, 
 
 | Model | Served with | What it is |
 |---|---|---|
-| [`ehzawad/Voxtral-Mini-3B-2507-bn-BD`](https://huggingface.co/ehzawad/Voxtral-Mini-3B-2507-bn-BD), branch [`fp8`](https://huggingface.co/ehzawad/Voxtral-Mini-3B-2507-bn-BD/tree/fp8) | [vLLM](https://docs.vllm.ai) 0.31 | Voxtral Mini 3B, an audio LLM, with its text decoder in FP8 |
+| [`ehzawad/Voxtral-Mini-3B-2507-bn-BD`](https://huggingface.co/ehzawad/Voxtral-Mini-3B-2507-bn-BD), BF16 snapshot `d1c7aeb0cd18` | [vLLM](https://docs.vllm.ai) 0.31 | Voxtral Mini 3B, an audio LLM |
 
 **Live demo: <https://ehzawad-56775--voxtral-bn-asr.us-east.modal.run>.** Record or upload Bangla speech and read the transcript. It works on phones too.
 - **Cold start:** the GPU sleeps when idle, so the first visit wakes it, which takes about half a minute (24 s measured, warm-up included). The service is restored from a GPU memory snapshot instead of being loaded and compiled; the first 2–3 wakes after a deploy are full boots (~5–7 min) while Modal makes the snapshots. The page stays locked until the model has answered a warm-up transcription.
-- **Speed:** through the page, the model takes about 1.6–1.9 s for a 16 s clip on the L4. Upload time comes on top.
+- **Speed:** through the page, the model takes about 2.3–2.4 s for a 16 s clip on the L4. Upload time comes on top.
 - **Idle cost:** nothing runs, and nothing is billed, 10 minutes after the last use.
 - **Voice chat:** [`/chat`](https://ehzawad-56775--voxtral-bn-asr.us-east.modal.run/chat) on this page opens the Bangla voice chatbot (repo [bn-voice-chat](https://github.com/ehzawad/bn-voice-chat)): ask in Bangla by voice or text, and read and hear the answer.
 
@@ -17,7 +17,7 @@ Serving for the author's private Bangla (Bangladesh) speech-to-text fine-tunes, 
 ```
 services/
   frontend/       the page and its API: model picker, readiness gating, chunking (Modal, CPU)
-  voxtral-mini/   Voxtral Mini FP8 inference (Modal, vLLM on 1× L4), plus the same server and a batch tool for any CUDA GPU
+  voxtral-mini/   Voxtral Mini inference (Modal, vLLM on 1× L4), plus the same server and a batch tool for any CUDA GPU
 shared/
   asr_core.py     the benchmark's audio loading and chunking, used by every service that chunks
 ```
@@ -54,18 +54,15 @@ Every path feeds the model exactly what the benchmark fed it:
 
 The measured accuracy below therefore carries over to these paths.
 
-## FP8, served since 2026-10-19
+## Caveats
 
-Every path now loads the model's `fp8` branch (commit `287697acc3ab`) instead of the BF16 snapshot `d1c7aeb0cd18`. It is the same fine-tune with its text decoder in FP8:
-- **Format:** E4M3 weights with one scale per output channel, and activations quantized per token at run time. The audio encoder, the adapter, the embeddings and the output layer stay BF16.
-- **Size:** the checkpoint is 6.14 GB instead of 9.35 GB.
-- **Speed:** on the L4 with CUDA graphs, FP8 is 1.56× faster than BF16 per request (a 16 s piece takes 1.56 s instead of 2.43 s), and batches 1.44× faster. In eager mode it is about 12% *slower*, so the service compiles with CUDA graphs. A full boot takes ~5 minutes, which is why every cold start restores a GPU-memory snapshot instead (about half a minute). Details are in [`services/voxtral-mini/`](services/voxtral-mini/README.md).
-- **Hardware:** FP8 kernels need Ada, Hopper or Blackwell. The L4 is Ada.
-- **Accuracy:** the model card compares it with BF16 on the benchmark's eleven sets, as a paired per-utterance WER difference on the same clips. The one-sided 95% upper bound stays below +0.5 WER points on ten sets, and FLEURS moves from 14.70% to 14.64%. Ben-10 is inconclusive (68.38% → 67.33%) because repetition loops widen its interval.
+- **An FP8 version exists but is not served.** The model's [`fp8`](https://huggingface.co/ehzawad/Voxtral-Mini-3B-2507-bn-BD/tree/fp8) branch has an FP8 text decoder (6.1 GB instead of 9.35 GB).
+  - On an L4 with CUDA graphs it decodes about 1.5× faster; without them it is slower than BF16.
+  - Its WER is within 0.5 points of BF16 on ten of the benchmark's eleven sets.
+  - This page serves the original BF16 weights because accuracy comes first.
+- **Wakes after a deploy are slow.** The first 2–3 wakes after each deploy are full boots of ~5 min while Modal builds the GPU-memory snapshots. After that, a wake takes about half a minute.
 
-The two tables below were measured with BF16.
-
-## Accuracy: Voxtral Mini BF16 (benchmark run)
+## Accuracy: Voxtral Mini (benchmark run)
 
 Snapshot `d1c7aeb0cd18`, decoded at batch 1 on one A100 by the benchmark's own harness and scored with its scorer on SHA-256-verified audio. WER and CER are pooled. The comparator in the last column is the public model with the lowest observed WER on each set. Its paired difference has a 95% bootstrap interval over reference clusters, which is pointwise and not adjusted for multiple comparisons.
 
@@ -89,7 +86,7 @@ Conformer Large's card lists Kathbath, SUBAK.KO and Common Voice as training dat
 
 **Seven of the eleven sets are Indian-source.** SUBAK.KO, BanSpeech and Ben-10 are Bangladeshi; Common Voice records no speaker region. The model card documents no training data, so overlap with any of these sets is not ruled out.
 
-## Same outputs on every path: Voxtral Mini BF16 (FLEURS test, 920 clips)
+## Same outputs on every path: Voxtral Mini (FLEURS test, 920 clips)
 
 Each path was checked against the benchmark's earlier batched decode of the same snapshot ([bengali-asr-benchmark@d64a69f](https://github.com/ehzawad/bengali-asr-benchmark/tree/d64a69f)).
 

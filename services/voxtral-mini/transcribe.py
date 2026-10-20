@@ -36,7 +36,7 @@ import soundfile as sf
 
 SHARED = Path(__file__).resolve().parents[2] / "shared"  # the repo's one asr_core.py
 MODEL = "ehzawad/Voxtral-Mini-3B-2507-bn-BD"
-REVISION = "287697acc3abeda13de40ecae073e07b67947b9c"  # branch fp8: FP8 decoder (FP8 kernels on Ada, Hopper, Blackwell)
+REVISION = "d1c7aeb0cd18f8a7a057bf756df5ee2ccb7aebcd"  # the benchmarked snapshot
 # asr_core.py is copied verbatim from github.com/ehzawad/bengali-asr-benchmark@5cccd1a
 ASR_CORE_SHA256 = "f894ef44ae4834fc80878f8b206e65e8321a0014807559494af0eb8880638a18"
 AUDIO_EXTS = {".wav", ".flac", ".mp3", ".m4a", ".mp4", ".ogg", ".opus", ".webm", ".aac", ".wma", ".aif", ".aiff"}
